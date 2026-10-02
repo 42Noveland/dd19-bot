@@ -63,6 +63,8 @@ class Provider:
     api_key: str = ""
     extra_headers: dict[str, str] = field(default_factory=dict)
     extra_payload: dict[str, Any] = field(default_factory=dict)
+    max_output: int | None = None  # 该后端允许的输出上限（可选钳制）
+    supports_tools: bool = False  # 是否支持 function calling（web_search 工具）
 
 
 _PROVIDER_ALIASES = {
@@ -95,6 +97,11 @@ def _opencode_payload(env: Mapping[str, str]) -> dict[str, Any]:
     return {"reasoning_effort": effort}
 
 
+def _opt_int(env: Mapping[str, str], name: str) -> int | None:
+    raw = env.get(name, "").strip()
+    return int(raw) if raw.isdigit() else None
+
+
 def _build_providers(env: Mapping[str, str]) -> dict[str, Provider]:
     return {
         "local": Provider(
@@ -102,6 +109,8 @@ def _build_providers(env: Mapping[str, str]) -> dict[str, Provider]:
             base_url=env.get("LLM_LOCAL_BASE_URL", "http://127.0.0.1:8080/v1"),
             model=env.get("LLM_LOCAL_MODEL", "qwen"),
             api_key=_get_key(env, "LLM_LOCAL_API_KEY"),
+            max_output=_opt_int(env, "LLM_LOCAL_MAX_OUTPUT"),
+            supports_tools=_is_on(env, "LLM_LOCAL_TOOLS", "0"),
         ),
         "deepseek": Provider(
             name="deepseek",
@@ -109,6 +118,8 @@ def _build_providers(env: Mapping[str, str]) -> dict[str, Provider]:
             model=env.get("LLM_DEEPSEEK_MODEL", "deepseek-flash"),
             api_key=_get_key(env, "LLM_DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY"),
             extra_payload=_deepseek_payload(env),
+            max_output=_opt_int(env, "LLM_DEEPSEEK_MAX_OUTPUT"),
+            supports_tools=_is_on(env, "LLM_DEEPSEEK_TOOLS", "1"),
         ),
         "opencode_go": Provider(
             name="opencode_go",
@@ -116,6 +127,8 @@ def _build_providers(env: Mapping[str, str]) -> dict[str, Provider]:
             model=env.get("LLM_OPENCODE_GO_MODEL", "deepseek-v4.1-flash"),
             api_key=_get_key(env, "LLM_OPENCODE_GO_API_KEY", "OPENCODE_GO_API_KEY", "OPENCODE_API_KEY"),
             extra_payload=_opencode_payload(env),
+            max_output=_opt_int(env, "LLM_OPENCODE_GO_MAX_OUTPUT"),
+            supports_tools=_is_on(env, "LLM_OPENCODE_GO_TOOLS", "1"),
         ),
     }
 
@@ -139,10 +152,19 @@ class Config:
     llm_reply_mode: str = "all"
     llm_system_prompt: str = ""
     llm_max_tokens: int = 2000
+    llm_daily_token_limit: int = 10_000_000
+    llm_quota_reply: str = "白饭吃完了QAQ"
+    llm_tool_max_rounds: int = 3
     llm_cooldown: float = 5.0
     llm_timeout: float = 180.0
     llm_show_provider: bool = False
     llm_show_reasoning: bool = False
+    usage_file: str = "logs/token-usage.json"
+    search_enabled: bool = True
+    search_api_key: str = ""
+    search_base_url: str = "https://api.firecrawl.dev"
+    search_max_results: int = 5
+    search_timeout: float = 30.0
     providers: dict[str, Provider] = field(default_factory=dict)
 
 
@@ -183,10 +205,19 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         llm_reply_mode=reply_mode,
         llm_system_prompt=system_prompt,
         llm_max_tokens=int(env.get("LLM_MAX_TOKENS", "2000")),
+        llm_daily_token_limit=int(env.get("LLM_DAILY_TOKEN_LIMIT", "10000000")),
+        llm_quota_reply=env.get("LLM_QUOTA_REPLY", "白饭吃完了QAQ").strip() or "白饭吃完了QAQ",
+        llm_tool_max_rounds=max(1, int(env.get("LLM_TOOL_MAX_ROUNDS", "3"))),
         llm_cooldown=float(env.get("LLM_COOLDOWN", "5")),
         llm_timeout=float(env.get("LLM_TIMEOUT", "180")),
         llm_show_provider=_is_on(env, "LLM_SHOW_PROVIDER", "0"),
         llm_show_reasoning=_is_on(env, "LLM_SHOW_REASONING", "0"),
+        usage_file=env.get("USAGE_FILE", "logs/token-usage.json").strip() or "logs/token-usage.json",
+        search_enabled=_is_on(env, "SEARCH_ENABLED", "1"),
+        search_api_key=_get_key(env, "SEARCH_API_KEY", "FIRECRAWL_API_KEY"),
+        search_base_url=env.get("SEARCH_BASE_URL", "https://api.firecrawl.dev"),
+        search_max_results=int(env.get("SEARCH_MAX_RESULTS", "5")),
+        search_timeout=float(env.get("SEARCH_TIMEOUT", "30")),
         providers=providers,
     )
 

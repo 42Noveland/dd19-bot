@@ -13,7 +13,7 @@ from nonebot.params import CommandArg
 from nonebot.permission import SUPERUSER
 from nonebot.rule import Rule
 
-from core import llm
+from core import budget, llm, search
 from core.config import get_config, normalize_provider_name
 from core.gate import is_allowed_group, should_reply_plain, strip_text_mention
 
@@ -26,6 +26,8 @@ async def _allowed(event: Event) -> bool:
 chat_all = on_message(rule=Rule(_allowed), priority=50, block=False)
 chat = on_command("chat", rule=Rule(_allowed), priority=20, block=True)
 model_cmd = on_command("model", rule=Rule(_allowed), permission=SUPERUSER, priority=5, block=True)
+search_cmd = on_command("search", rule=Rule(_allowed), priority=20, block=True)
+usage_cmd = on_command("usage", rule=Rule(_allowed), aliases={"额度"}, priority=20, block=True)
 
 _MENTION_ALIASES: dict[str, set[str]] = {}
 
@@ -79,14 +81,19 @@ def _format_reply(reply: llm.Reply) -> str:
 
 
 async def _reply_chat(matcher, event: GroupMessageEvent, text: str) -> None:
-    """公共聊天流程：总开关 → 限频 → 主选+回退链 → 组装回复。"""
+    """公共聊天流程：总开关 → 配额 → 限频 → 主选+回退链 → 组装回复。"""
     cfg = get_config()
     if not cfg.llm_enabled:
         await matcher.finish("聊天功能未启用（把 bot/.env 里 LLM_ENABLED 改为 1 并重启）")
+    if budget.exhausted():
+        await matcher.finish(cfg.llm_quota_reply)
     if not llm.allow(event.group_id, event.user_id):
         await matcher.finish("说得太快啦，稍等几秒再聊")
     try:
         reply = await llm.chat(text, session_key=f"qqbot-group-{event.group_id}")
+    except llm.QuotaExceededError:
+        await matcher.finish(cfg.llm_quota_reply)
+        return
     except Exception as exc:  # noqa: BLE001 —— 所有后端都失败时给用户明确提示
         await matcher.finish(f"AI 调用失败（所有后端）：{exc}")
         return
@@ -115,6 +122,76 @@ async def _handle_chat(event: GroupMessageEvent, args: Message = CommandArg()) -
     await _reply_chat(chat, event, text)
 
 
+def _build_search_prompt(query: str, results: list[search.SearchResult]) -> str:
+    lines = [f"- {r.title}：{r.snippet[:200]}（{r.url}）" for r in results]
+    return (
+        f"帮我根据网络搜索结果回答问题。搜索词：{query}\n"
+        "搜索结果：\n" + "\n".join(lines) + "\n"
+        "请用简短口语（1~3 句）总结最相关、可信的信息；不要编造；信息不足就直说。"
+    )
+
+
+def _format_search_links(results: list[search.SearchResult], top: int = 3) -> str:
+    lines = [f"{i}. {r.title or r.url} {r.url}" for i, r in enumerate(results[:top], 1)]
+    return "参考链接：\n" + "\n".join(lines)
+
+
+async def _do_search(matcher, event: GroupMessageEvent, query: str) -> None:
+    """搜索流程：配额/限频 → Firecrawl 搜索 → LLM 总结（失败退化为纯链接）。"""
+    cfg = get_config()
+    if not cfg.search_enabled:
+        await matcher.finish("搜索功能未启用（SEARCH_ENABLED=1 开启）")
+    if budget.exhausted():
+        await matcher.finish(cfg.llm_quota_reply)
+    if not llm.allow(event.group_id, event.user_id):
+        await matcher.finish("说得太快啦，稍等几秒再聊")
+    try:
+        results = await search.web_search(
+            query,
+            api_key=cfg.search_api_key,
+            base_url=cfg.search_base_url,
+            limit=cfg.search_max_results,
+            timeout=cfg.search_timeout,
+        )
+    except Exception as exc:  # noqa: BLE001
+        await matcher.finish(f"搜索失败了喵…（{type(exc).__name__}）")
+        return
+    if not results:
+        await matcher.finish("没有搜到相关内容喵…")
+    summary = ""
+    try:
+        reply = await llm.chat(
+            _build_search_prompt(query, results), session_key=f"qqbot-group-{event.group_id}"
+        )
+        summary = reply.text
+    except llm.QuotaExceededError:
+        await matcher.finish(cfg.llm_quota_reply)
+        return
+    except Exception:  # noqa: BLE001 —— 总结失败就只发链接
+        summary = ""
+    out = (summary.strip() + "\n\n" if summary.strip() else "") + _format_search_links(results)
+    await matcher.finish(out)
+
+
+@search_cmd.handle()
+async def _handle_search(event: GroupMessageEvent, args: Message = CommandArg()) -> None:
+    query = args.extract_plain_text().strip()
+    if not query:
+        await search_cmd.finish("用法：/search 关键词（或 @我 发「搜索 关键词」）")
+    await _do_search(search_cmd, event, query)
+
+
+@usage_cmd.handle()
+async def _handle_usage() -> None:
+    cfg = get_config()
+    st = budget.status()
+    lines = [f"今日已用 {st['total']:,} / {cfg.llm_daily_token_limit:,} tokens（{st['date']}）"]
+    for name, used in sorted(st.get("by_provider", {}).items()):
+        lines.append(f"- {name}: {used:,}")
+    lines.append(f"剩余：{budget.remaining():,}")
+    await usage_cmd.finish("\n".join(lines))
+
+
 def _provider_line(name: str) -> str:
     cfg = get_config()
     provider = cfg.providers[name]
@@ -138,6 +215,8 @@ async def _handle_model(args: Message = CommandArg()) -> None:
         name = normalize_provider_name(raw) or raw
         if name not in cfg.providers:
             await model_cmd.finish(f"未知后端：{raw}")
+        if budget.exhausted():
+            await model_cmd.finish(cfg.llm_quota_reply + "（今日额度已用完）")
         start = time.monotonic()
         try:
             completion = await llm.chat_once(
@@ -146,6 +225,8 @@ async def _handle_model(args: Message = CommandArg()) -> None:
             cost = time.monotonic() - start
             think = f"，思考 {len(completion.reasoning)} 字" if completion.reasoning else "，未见思考输出"
             await model_cmd.finish(f"{name}: OK（{cost:.1f}s{think}）→ {completion.text[:30]}")
+        except llm.QuotaExceededError:
+            await model_cmd.finish(cfg.llm_quota_reply + "（今日额度已用完）")
         except Exception as exc:  # noqa: BLE001
             await model_cmd.finish(f"{name}: 失败：{type(exc).__name__}（{exc}）")
 

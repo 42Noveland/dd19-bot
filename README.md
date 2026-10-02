@@ -34,10 +34,10 @@ D:\agent-workspace\qqbot\
 | 项目 | 命令/位置 | 期望 |
 |---|---|---|
 | 端口存活 | 浏览器开 http://127.0.0.1:8081/ | 返回 404 = 正常 |
-| 单元测试 | `cd bot && .venv\Scripts\python.exe -m pytest -q tests` | `25 passed` |
+| 单元测试 | `cd bot && .venv\Scripts\python.exe -m pytest -q tests` | `44 passed` |
 | 全链路自测 | bot 运行时 `bot\.venv\Scripts\python.exe bot\tests\e2e\fake_napcat.py` | `ALL PASS` |
 | NapCat 面板 | http://127.0.0.1:6099/webui（token 见 `napcat\NapCat.Shell.Node\napcat\config\webui.json`） | 仅本机可访问 |
-| 群内 | `/ping` `/jrrp` `/help`；`@dd19 内容`；`/model`（管理员） | 正常回复 |
+| 群内 | `/ping` `/jrrp` `/help`；`@dd19 内容`；`/search 关键词`；`/usage`；`/model`（管理员） | 正常回复 |
 
 ## 关键配置（bot\.env）
 
@@ -50,7 +50,12 @@ D:\agent-workspace\qqbot\
 | LLM_FALLBACKS | deepseek,opencode_go | 回退链（实际生效：deepseek；不想耗额度可清空） |
 | LLM_REPLY_MODE | mention | 默认：@我/引用回复才聊；all=所有消息都聊；command=仅 /chat |
 | LLM_PERSONA_FILE | persona.md | 人设文件；也可用 LLM_SYSTEM_PROMPT 单行直写（优先级更高） |
-| LLM_MAX_TOKENS | 2000 | 单次生成输出上限（思考+正文的总预算） |
+| LLM_MAX_TOKENS | 100000 | 单次会话 token 上限（输入估算+输出上限合计；超长输入自动截断） |
+| LLM_DAILY_TOKEN_LIMIT | 10000000 | 单日 token 上限（跨后端合计；北京时间每日重置，存 bot/logs/token-usage.json） |
+| LLM_QUOTA_REPLY | 白饭吃完了QAQ | 额度用完后的固定回复 |
+| LLM_TOOL_MAX_ROUNDS | 3 | web_search 工具调用的最大轮次 |
+| SEARCH_ENABLED / SEARCH_API_KEY | 1 / Firecrawl | 联网搜索（LLM 按需调用 web_search；/search 手动触发） |
+| LLM_*_TOOLS | opencode_go=on, deepseek=on, local=off | 各后端是否启用 function calling |
 | LLM_TIMEOUT | 180 | 单次请求超时（秒） |
 | LLM_COOLDOWN | 5 | 每人每群限频（秒） |
 | LLM_DEEPSEEK_* / LLM_OPENCODE_GO_* | 思考=on，档位 medium | 两个 API 后端的思考参数 |
@@ -59,13 +64,15 @@ D:\agent-workspace\qqbot\
 
 - **触发**：@dd19（真实 @ 或文字形式"@dd19"均可）或引用回复机器人消息 → 猫娘聊天；
   命令（/ping 等）直接发即可，无需 @；非白名单群完全静默。
-- **限频**：同一人同一群 5 秒内只能触发一次聊天。
+- **联网搜索**：LLM 按需调用 `web_search` 工具（天气/新闻/价格/事实核查类问题会自动搜，
+  回复附参考链接）；也可手动 `/search 关键词`。搜索走 Firecrawl API。
+- **限频**：同一人同一群 5 秒内只能触发一次聊天/搜索。
 - **回退链**：主选失败自动尝试下一个后端，回复末尾可用 `LLM_SHOW_PROVIDER=1` 显示 `[via xxx]`。
-- **Token 控制**：本项目**不做多轮上下文**——每次 @ 都是独立单轮请求
-  （`messages = [system 人设 + 这一条消息]`），不存在会话越聊越长的问题；
-  输出上限由 `LLM_MAX_TOKENS`（请求里的 `max_tokens`）控制；
-  `finish_reason=length` 时回复会附"被截断"提示；思考占满预算导致空正文会自动回退下一后端。
-  输入侧无额外截断（模型自身上下文窗口兜底，本机 llama 配置 65536）。
+- **Token 控制**：不做多轮上下文——每次 @ 是独立单轮请求（工具调用的各轮也计入预算）。
+  单次会话上限 `LLM_MAX_TOKENS`（10w，输入估算+输出上限合计；超长输入自动截断）；
+  单日上限 `LLM_DAILY_TOKEN_LIMIT`（1kw，北京时间每日重置、持久化、重启不丢）；
+  **额度用完时 @bot 只会回复「白饭吃完了QAQ」**；`/usage` 可查当日用量与剩余。
+  输出被截断时会附提示；思考占满预算导致空正文会自动回退下一后端。
 
 ## 故障排查
 
@@ -101,13 +108,19 @@ D:\agent-workspace\qqbot\
 
 ## 验收记录（2026-10-02）
 
-- 单元测试：**25 passed**（配置解析/限频/回退链/思考参数/人设注入/文字@兼容/白名单）。
+- 单元测试：**44 passed**（配置解析/限频/回退链/思考参数/人设注入/文字@兼容/白名单/
+  工具循环/预算记账/搜索解析/配额拦截）。
 - 协议级 e2e（fake_napcat）：**ALL PASS** —— /ping、/jrrp、非白名单静默、
-  mention 路由（普通消息静默）、真实 @ 聊天、**文字@命令 + 文字@聊天**、/model 列表/切换/还原。
+  mention 路由（普通消息静默）、真实 @ 聊天、**文字@命令 + 文字@聊天**、
+  **/search 指令**、**LLM 按需调用 web_search 工具**、/model 列表/切换/还原。
 - 实机验证：
   - 测试群与朋友群：`/ping` → `pong!`（含"文字@"形式）✔
-  - `@dd19 一句话介绍你自己` → AI 回复（deepseek 时期）✔
-  - 默认模型切换为 **opencode_go / deepseek-v4.1-flash**，两个 API 思考档位 **medium**；链路实测 ✔
-  - **猫娘 Nova 人设**注入（persona.md）并实测 ✔（"我是dd19呀，群里的猫娘小助手喵~"→ 后升级为完整 SOUL）
+  - `@dd19 一句话介绍你自己` → AI 回复 ✔
+  - 默认模型 **opencode_go / deepseek-v4.1-flash**（思考 medium）；链路实测 ✔
+  - **猫娘 Nova 完整 SOUL** 注入并实测 ✔（回复带动作描写与"喵~"风格）
+  - **联网搜索**：@dd19 "帮我搜一下北京今天的天气" → 自动搜索并作答（附来源）✔；
+    `/search 北京今天天气` → Nova 风格总结 + 参考链接 ✔
+  - **Token 预算**：单次会话上限 10w、单日上限 1kw 生效；记账持久化于
+    `bot/logs/token-usage.json`（重启不丢、按北京时间跨天重置）；超限固定回复「白饭吃完了QAQ」✔
 - 未做/待办：本机 llama（local 后端）实机测试（需先启动 start-qwen38.cmd 后 `/model test local`）；
   手机访问 6099 的负测试（WebUI 已限 127.0.0.1）；48 小时风控观察。

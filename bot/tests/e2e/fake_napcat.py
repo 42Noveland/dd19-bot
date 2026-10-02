@@ -10,6 +10,7 @@
   [OK] 默认聊天路由：mention=不@不聊 / all=都聊 / command=都不聊
   [OK] 真实 LLM 一轮（@机器人，或 all 模式普通消息；走主选+回退链）
   [OK] 文本形式 @（"@QQ号" 当普通文字）：命令与聊天均可触发（兼容层）
+  [OK] 联网搜索：/search 指令 与 LLM 按需调用 web_search 工具
   [OK] /model 列表/切换/还原（需 .env 配置 SUPERUSERS）
 
 成功时最后一行输出 ALL PASS，退出码 0。
@@ -215,6 +216,31 @@ async def main() -> int:
             text = _params_text(action)
             assert "说得太快啦" not in text, "触发了限频，请重跑脚本"
             print("[OK] 文本@聊天 -> LLM 回复:", text[:150])
+
+        # 4c) 联网搜索：/search 指令 + LLM 按需调用 web_search 工具
+        search_on = env.get("SEARCH_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
+        if search_on:
+            await ws.send(json.dumps(_event(allowed_group, [_text_seg("/search 北京今天天气")], 2009, user_id=20004)))
+            action = await _wait_for(ws, _is_chat_reply, wait_llm)
+            assert action, "/search 未收到回复"
+            text = _params_text(action)
+            assert "搜索失败" not in text, f"/search 失败: {text[:200]}"
+            assert "参考链接" in text or "http" in text, f"/search 回复不含链接: {text[:200]}"
+            print("[OK] /search ->", text[:150])
+
+            if mode in ("mention", "all"):
+                tool_segs = [
+                    {"type": "at", "data": {"qq": str(SELF_ID)}},
+                    _text_seg(" 帮我搜一下北京今天的天气，然后告诉我"),
+                ]
+                await ws.send(json.dumps(_event(allowed_group, tool_segs, 2010, user_id=20005)))
+                action = await _wait_for(ws, _is_chat_reply, wait_llm * 1.5)
+                assert action, "LLM 按需搜索（工具调用）未收到回复"
+                text = _params_text(action)
+                assert "白饭吃完了" not in text, "意外触发配额提示"
+                print("[OK] LLM 按需搜索 -> ", text[:150])
+        else:
+            print("[SKIP] SEARCH_ENABLED=0，跳过搜索场景")
 
         # 5) /model（仅当 .env 配置了 SUPERUSERS 时）
         if superusers:

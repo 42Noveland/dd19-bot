@@ -25,6 +25,8 @@ def _help_text() -> str:
         "/ping 测试机器人是否在线\n"
         "/jrrp 今日人品值\n"
         f"{chat_line}\n"
+        "搜索 <内容>（或 /search）联网搜索\n"
+        "/usage 今日 token 用量\n"
         "/model 查看/切换模型（仅管理员）\n"
         "/help 显示本菜单"
     )

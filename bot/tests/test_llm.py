@@ -4,16 +4,21 @@ import json
 import httpx
 import pytest
 
+from core import budget as core_budget
 from core import config as core_config
 from core import llm
+from core import search as core_search
 from core.config import load_config
 
 
 @pytest.fixture(autouse=True)
 def _hermetic_config(monkeypatch):
     """用例级隔离：chat_once 使用进程级单例 get_config()，这里固定为空配置，
-    避免读取真实 bot/.env（其中含人设/密钥）导致断言不确定。"""
+    并把预算记账/额度判断替换为确定性桩，避免读写真实 bot/.env 与用量文件。"""
     monkeypatch.setattr(core_config, "_config", core_config.load_config({}), raising=False)
+    monkeypatch.setattr(core_budget, "record", lambda *a, **k: None)
+    monkeypatch.setattr(core_budget, "exhausted", lambda *a, **k: False)
+    monkeypatch.setattr(core_budget, "remaining", lambda *a, **k: 10**9)
 
 
 def test_rate_limit():
@@ -24,15 +29,15 @@ def test_rate_limit():
     assert llm.allow(1, 2, now=5.2, cooldown=5.0) is True  # 另一个用户不受影响
 
 
-def _capture_transport(captured: dict, message: dict, finish_reason: str = "stop"):
+def _capture_transport(captured: dict, message: dict, finish_reason: str = "stop", usage: dict | None = None):
     def handler(request: httpx.Request) -> httpx.Response:
         captured["url"] = str(request.url)
         captured["headers"] = dict(request.headers)
         captured["body"] = json.loads(request.content)
-        return httpx.Response(
-            200,
-            json={"choices": [{"finish_reason": finish_reason, "message": message}]},
-        )
+        body: dict = {"choices": [{"finish_reason": finish_reason, "message": message}]}
+        if usage is not None:
+            body["usage"] = usage
+        return httpx.Response(200, json=body)
 
     return httpx.MockTransport(handler)
 
@@ -147,6 +152,153 @@ def test_no_system_prompt_by_default():
     provider = load_config({}).providers["local"]
     asyncio.run(llm.chat_once("hi", provider, transport=_capture_transport(captured, {"content": "ok"})))
     assert all(m["role"] != "system" for m in captured["body"]["messages"])
+
+
+def test_usage_recorded(monkeypatch):
+    calls = []
+    monkeypatch.setattr(core_budget, "record", lambda name, tokens, **k: calls.append((name, tokens)))
+    captured = {}
+    provider = load_config({"DEEPSEEK_API_KEY": "dk"}).providers["deepseek"]
+    asyncio.run(
+        llm.chat_once(
+            "hi", provider, transport=_capture_transport(captured, {"content": "喵"}, usage={"total_tokens": 123})
+        )
+    )
+    assert calls == [("deepseek", 123)]
+
+
+def test_quota_exceeded_raises_and_chain_not_fallback(monkeypatch):
+    monkeypatch.setattr(core_budget, "exhausted", lambda *a, **k: True)
+    provider = load_config({}).providers["local"]
+    with pytest.raises(llm.QuotaExceededError):
+        asyncio.run(llm.chat_once("hi", provider, transport=_capture_transport({}, {"content": "x"})))
+    with pytest.raises(llm.QuotaExceededError):
+        asyncio.run(llm.chat("hi", chain=["local", "deepseek"]))
+
+
+def test_max_tokens_respects_call_limit(monkeypatch):
+    captured = {}
+    cfg = load_config({"DEEPSEEK_API_KEY": "dk", "LLM_MAX_TOKENS": "100000"})
+    monkeypatch.setattr(core_config, "_config", cfg, raising=False)
+    asyncio.run(
+        llm.chat_once("hi", cfg.providers["deepseek"], transport=_capture_transport(captured, {"content": "ok"}))
+    )
+    expected = max(64, 100000 - core_budget.estimate_tokens("hi"))
+    assert captured["body"]["max_tokens"] == expected
+
+
+def test_input_truncated_to_call_limit(monkeypatch):
+    captured = {}
+    cfg = load_config({"DEEPSEEK_API_KEY": "dk", "LLM_MAX_TOKENS": "1000"})
+    monkeypatch.setattr(core_config, "_config", cfg, raising=False)
+    asyncio.run(
+        llm.chat_once("啊" * 5000, cfg.providers["deepseek"], transport=_capture_transport(captured, {"content": "ok"}))
+    )
+    sent = captured["body"]["messages"][-1]["content"]
+    assert "内容过长已截断" in sent
+    assert len(sent) < 5000
+
+
+def test_tools_payload_when_enabled(monkeypatch):
+    captured = {}
+    cfg = load_config({"DEEPSEEK_API_KEY": "dk", "SEARCH_API_KEY": "fk"})
+    monkeypatch.setattr(core_config, "_config", cfg, raising=False)
+    asyncio.run(
+        llm.chat_once("hi", cfg.providers["deepseek"], transport=_capture_transport(captured, {"content": "ok"}))
+    )
+    assert captured["body"]["tools"][0]["function"]["name"] == "web_search"
+
+
+def test_tools_absent_without_search_key(monkeypatch):
+    captured = {}
+    cfg = load_config({"DEEPSEEK_API_KEY": "dk"})
+    monkeypatch.setattr(core_config, "_config", cfg, raising=False)
+    asyncio.run(
+        llm.chat_once("hi", cfg.providers["deepseek"], transport=_capture_transport(captured, {"content": "ok"}))
+    )
+    assert "tools" not in captured["body"]
+
+
+def test_tools_absent_for_local_by_default(monkeypatch):
+    captured = {}
+    cfg = load_config({"SEARCH_API_KEY": "fk"})  # local 默认 LLM_LOCAL_TOOLS=off
+    monkeypatch.setattr(core_config, "_config", cfg, raising=False)
+    asyncio.run(
+        llm.chat_once("hi", cfg.providers["local"], transport=_capture_transport(captured, {"content": "ok"}))
+    )
+    assert "tools" not in captured["body"]
+
+
+def test_tool_loop_executes_search_and_returns_final(monkeypatch):
+    searched = {}
+
+    async def fake_search(query, **kwargs):
+        searched["query"] = query
+        return [core_search.SearchResult(title="天气页", url="http://x", snippet="晴 15-24℃")]
+
+    monkeypatch.setattr(core_search, "web_search", fake_search)
+    cfg = load_config({"DEEPSEEK_API_KEY": "dk", "SEARCH_API_KEY": "fk"})
+    monkeypatch.setattr(core_config, "_config", cfg, raising=False)
+    requests: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requests.append(body)
+        if len(requests) == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "finish_reason": "tool_calls",
+                            "message": {
+                                "content": "",
+                                "tool_calls": [
+                                    {
+                                        "id": "c1",
+                                        "type": "function",
+                                        "function": {"name": "web_search", "arguments": json.dumps({"query": "北京天气"})},
+                                    }
+                                ],
+                            },
+                        }
+                    ],
+                    "usage": {"total_tokens": 30},
+                },
+            )
+        return httpx.Response(
+            200,
+            json={"choices": [{"finish_reason": "stop", "message": {"content": "晴，15-24℃喵"}}], "usage": {"total_tokens": 20}},
+        )
+
+    completion = asyncio.run(
+        llm.chat_once("北京今天天气", cfg.providers["deepseek"], transport=httpx.MockTransport(handler))
+    )
+    assert completion.text == "晴，15-24℃喵"
+    assert completion.total_tokens == 50
+    assert searched["query"] == "北京天气"
+    second_messages = requests[1]["messages"]
+    assert any(m.get("role") == "tool" and "晴 15-24℃" in str(m.get("content")) for m in second_messages)
+    assert any(m.get("role") == "assistant" and m.get("tool_calls") for m in second_messages)
+
+
+def test_tool_error_retries_without_tools(monkeypatch):
+    cfg = load_config({"DEEPSEEK_API_KEY": "dk", "SEARCH_API_KEY": "fk"})
+    monkeypatch.setattr(core_config, "_config", cfg, raising=False)
+    seen: list[bool] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        seen.append("tools" in body)
+        if "tools" in body:
+            return httpx.Response(400, text="Invalid parameter: tools is not supported by this model")
+        return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": "好"}}]})
+
+    completion = asyncio.run(
+        llm.chat_once("hi", cfg.providers["deepseek"], transport=httpx.MockTransport(handler))
+    )
+    assert completion.text == "好"
+    assert seen == [True, False]
 
 
 def test_chat_falls_back_until_success(monkeypatch):

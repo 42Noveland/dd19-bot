@@ -72,6 +72,34 @@ def test_persona_file_loading(tmp_path):
     assert cfg3.llm_system_prompt == ""
 
 
+def test_budget_and_tools_config_parse():
+    cfg = load_config({})
+    assert cfg.llm_daily_token_limit == 10_000_000
+    assert cfg.llm_quota_reply == "白饭吃完了QAQ"
+    assert cfg.llm_tool_max_rounds == 3
+    assert cfg.providers["opencode_go"].supports_tools is True
+    assert cfg.providers["deepseek"].supports_tools is True
+    assert cfg.providers["local"].supports_tools is False
+    cfg2 = load_config(
+        {
+            "LLM_DAILY_TOKEN_LIMIT": "123",
+            "LLM_QUOTA_REPLY": "没了",
+            "LLM_TOOL_MAX_ROUNDS": "5",
+            "LLM_LOCAL_TOOLS": "on",
+            "LLM_DEEPSEEK_TOOLS": "off",
+            "SEARCH_ENABLED": "0",
+            "SEARCH_API_KEY": "sk",
+        }
+    )
+    assert cfg2.llm_daily_token_limit == 123
+    assert cfg2.llm_quota_reply == "没了"
+    assert cfg2.llm_tool_max_rounds == 5
+    assert cfg2.providers["local"].supports_tools is True
+    assert cfg2.providers["deepseek"].supports_tools is False
+    assert cfg2.search_enabled is False
+    assert cfg2.search_api_key == "sk"
+
+
 def test_provider_alias_and_fallbacks():
     cfg = load_config(
         {"LLM_PROVIDER": "opencode-go", "LLM_FALLBACKS": "deepseek, 本地 ,deepseek, opencode-go"}

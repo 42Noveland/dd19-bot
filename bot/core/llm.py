@@ -1,6 +1,7 @@
 """LLM 调用（local / deepseek / opencode_go 三后端）+ 思考模式 + 失败回退 + 限频。"""
 from __future__ import annotations
 
+import json
 import re
 import time
 from dataclasses import dataclass
@@ -8,6 +9,7 @@ from typing import Any, Sequence
 
 import httpx
 
+from . import budget, search
 from .config import Provider, get_config
 
 # opencode.ai 前面有 Cloudflare：库默认 UA 可能被 403（实测参考：opencode-go-usage 技能）
@@ -24,11 +26,16 @@ class EmptyReplyError(RuntimeError):
     """模型没有给出正文（常见于思考占满输出预算）。触发回退链换下一个后端。"""
 
 
+class QuotaExceededError(RuntimeError):
+    """当日 token 额度已用完。聊天路径应改为输出配额提示语（LLM_QUOTA_REPLY）。"""
+
+
 @dataclass
 class Completion:
     text: str
     reasoning: str = ""
     truncated: bool = False
+    total_tokens: int = 0
 
 
 @dataclass
@@ -37,6 +44,7 @@ class Reply:
     text: str
     reasoning: str = ""
     truncated: bool = False
+    total_tokens: int = 0
 
 
 def reset_rate_limit() -> None:
@@ -112,6 +120,62 @@ def _split_completion(message: dict[str, Any]) -> tuple[str, str]:
     return text.strip(), "\n\n".join(dict.fromkeys(p for p in parts if p))
 
 
+def _extract_usage(data: dict[str, Any], messages: list[dict[str, Any]], body: str, reasoning: str) -> int:
+    """从响应提取 token 用量；缺失时退化为估算。"""
+    usage = data.get("usage") or {}
+    total = usage.get("total_tokens")
+    if isinstance(total, int) and total > 0:
+        return total
+    pt = usage.get("prompt_tokens")
+    ct = usage.get("completion_tokens")
+    if isinstance(pt, int) or isinstance(ct, int):
+        return int(pt or 0) + int(ct or 0)
+    est_in = sum(budget.estimate_tokens(str(m.get("content", ""))) for m in messages)
+    return est_in + budget.estimate_tokens(body + reasoning)
+
+
+def _search_tool_spec() -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "联网搜索最新信息。当需要实时或不确定的知识（新闻、天气、价格、事实核查等）时调用。",
+            "parameters": {
+                "type": "object",
+                "properties": {"query": {"type": "string", "description": "搜索关键词"}},
+                "required": ["query"],
+            },
+        },
+    }
+
+
+async def _run_search_tool(query: str, cfg: Any) -> str:
+    """执行一次搜索，返回给模型的工具结果文本。"""
+    if not query:
+        return "错误：未提供搜索词。"
+    try:
+        results = await search.web_search(
+            query,
+            api_key=cfg.search_api_key,
+            base_url=cfg.search_base_url,
+            limit=cfg.search_max_results,
+            timeout=cfg.search_timeout,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return f"搜索失败：{type(exc).__name__}（{exc}）"
+    if not results:
+        return "没有搜到相关结果。"
+    lines = [f"- {r.title}：{r.snippet[:300]}（{r.url}）" for r in results[:5]]
+    return "搜索结果：\n" + "\n".join(lines)
+
+
+def _looks_like_tool_error(resp: httpx.Response) -> bool:
+    if resp.status_code not in (400, 404, 415, 422):
+        return False
+    text = (resp.text or "").lower()
+    return "tool" in text or "function" in text
+
+
 async def chat_once(
     text: str,
     provider: Provider,
@@ -119,30 +183,96 @@ async def chat_once(
     session_key: str | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
 ) -> Completion:
-    """向单个后端发一次请求；解析正文与思维链。空正文抛 EmptyReplyError。"""
+    """向单个后端发一次请求（含 web_search 工具循环）；空正文抛 EmptyReplyError。
+
+    预算执行点：单次会话上限（LLM_MAX_TOKENS，输入估算+输出上限合计）与
+    单日上限（core.budget 记账，含工具调用各轮）都在这里生效；
+    额度用完抛 QuotaExceededError。
+    """
     cfg = get_config()
-    url = provider.base_url.rstrip("/") + "/chat/completions"
+    if budget.exhausted():
+        raise QuotaExceededError("今日 token 额度已用完")
+
+    system_prompt = cfg.llm_system_prompt
+    # 单次会话上限：先保证输入（人设+消息）不超上限，再把剩余额度作为输出上限
+    reserve = 256
+    est_system = budget.estimate_tokens(system_prompt)
+    if est_system + budget.estimate_tokens(text) > cfg.llm_max_tokens - reserve:
+        text = budget.truncate_to_tokens(text, max(1, cfg.llm_max_tokens - reserve - est_system))
     messages: list[dict[str, Any]] = []
-    if cfg.llm_system_prompt:
-        messages.append({"role": "system", "content": cfg.llm_system_prompt})
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": text})
-    payload: dict[str, Any] = {
-        "model": provider.model,
-        "messages": messages,
-        "max_tokens": cfg.llm_max_tokens,
-        "stream": False,
-    }
-    payload.update(provider.extra_payload)
+
+    # web_search 工具（LLM 按需调用）：仅在搜索可用且该后端支持时携带
+    tools: list[dict[str, Any]] | None = None
+    if cfg.search_enabled and provider.supports_tools and cfg.search_api_key:
+        tools = [_search_tool_spec()]
+
+    url = provider.base_url.rstrip("/") + "/chat/completions"
+    headers = _build_headers(provider, session_key)
+    total_tokens = 0
     async with httpx.AsyncClient(timeout=cfg.llm_timeout, transport=transport) as client:
-        resp = await client.post(url, headers=_build_headers(provider, session_key), json=payload)
-        resp.raise_for_status()
-        data = resp.json()
-    choice = data["choices"][0]
-    finish_reason = choice.get("finish_reason")
-    body, reasoning = _split_completion(choice.get("message") or {})
-    if not body:
-        raise EmptyReplyError(f"空回复（finish_reason={finish_reason}，思考 {len(reasoning)} 字）")
-    return Completion(text=body, reasoning=reasoning, truncated=finish_reason == "length")
+        for _round in range(cfg.llm_tool_max_rounds):
+            if budget.exhausted():
+                raise QuotaExceededError("今日 token 额度已用完")
+            est_ctx = sum(budget.estimate_tokens(str(m.get("content", ""))) for m in messages)
+            max_out = cfg.llm_max_tokens - est_ctx
+            max_out = min(max_out, budget.remaining())
+            if provider.max_output:
+                max_out = min(max_out, provider.max_output)
+            max_out = max(64, max_out)
+            payload: dict[str, Any] = {
+                "model": provider.model,
+                "messages": messages,
+                "max_tokens": max_out,
+                "stream": False,
+            }
+            if tools:
+                payload["tools"] = tools
+            payload.update(provider.extra_payload)
+            resp = await client.post(url, headers=headers, json=payload)
+            if tools and _looks_like_tool_error(resp):
+                # 该后端不认 tools：去掉工具重试（本会话内后续也不再携带）
+                tools = None
+                payload.pop("tools", None)
+                resp = await client.post(url, headers=headers, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+            choice = data["choices"][0]
+            message = choice.get("message") or {}
+            tool_calls = message.get("tool_calls") or []
+            if tool_calls:
+                round_tokens = _extract_usage(data, messages, "", "")
+                if round_tokens > 0:
+                    budget.record(provider.name, round_tokens)
+                total_tokens += round_tokens
+                messages.append(
+                    {"role": "assistant", "content": message.get("content") or "", "tool_calls": tool_calls}
+                )
+                for call in tool_calls[:2]:  # 每轮最多执行 2 个搜索
+                    fn = call.get("function") or {}
+                    query = ""
+                    try:
+                        args = json.loads(fn.get("arguments") or "{}")
+                        query = str(args.get("query") or "").strip()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    result = await _run_search_tool(query, cfg)
+                    messages.append({"role": "tool", "tool_call_id": call.get("id") or "", "content": result})
+                continue
+            finish_reason = choice.get("finish_reason")
+            body, reasoning = _split_completion(message)
+            round_tokens = _extract_usage(data, messages, body, reasoning)
+            if round_tokens > 0:
+                budget.record(provider.name, round_tokens)
+            total_tokens += round_tokens
+            if not body:
+                raise EmptyReplyError(f"空回复（finish_reason={finish_reason}，思考 {len(reasoning)} 字）")
+            return Completion(
+                text=body, reasoning=reasoning, truncated=finish_reason == "length", total_tokens=total_tokens
+            )
+    raise EmptyReplyError(f"工具调用轮次超限（{cfg.llm_tool_max_rounds} 轮），未得到最终回答")
 
 
 async def chat(
@@ -168,7 +298,10 @@ async def chat(
                 text=completion.text,
                 reasoning=completion.reasoning,
                 truncated=completion.truncated,
+                total_tokens=completion.total_tokens,
             )
+        except QuotaExceededError:
+            raise  # 配额是全局状态，不再尝试后续后端
         except Exception as exc:  # noqa: BLE001 —— 回退链需要吞掉单个后端的错误
             last_exc = exc
     if last_exc is not None:
