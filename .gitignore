@@ -1,0 +1,7 @@
+napcat/
+bot/.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+bot/.env
+bot/logs/

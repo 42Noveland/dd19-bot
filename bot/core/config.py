@@ -1,0 +1,202 @@
+"""读取 .env / 环境变量，转换为强类型配置对象（含三 LLM 后端与思考参数）。"""
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Mapping
+
+_DOTENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+
+_ON_VALUES = {"1", "true", "yes", "on"}
+_EFFORTS = ("low", "medium", "high", "max")
+_REPLY_MODES = ("command", "mention", "all")
+
+
+def _read_dotenv(path: Path) -> dict[str, str]:
+    """极简 dotenv 解析：KEY=VALUE，# 开头为注释。"""
+    result: dict[str, str] = {}
+    if not path.exists():
+        return result
+    for raw in path.read_text(encoding="utf-8-sig").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        result[key.strip()] = value.strip().strip('"').strip("'")
+    return result
+
+
+def _parse_ids(raw: str) -> set[int]:
+    ids: set[int] = set()
+    for part in raw.replace("，", ",").split(","):
+        part = part.strip()
+        if part.isdigit():
+            ids.add(int(part))
+    return ids
+
+
+def _get_key(env: Mapping[str, str], *names: str) -> str:
+    for name in names:
+        value = env.get(name, "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _is_on(env: Mapping[str, str], key: str, default: str) -> bool:
+    return env.get(key, default).strip().lower() in _ON_VALUES
+
+
+def _norm_effort(raw: str, default: str = "high") -> str:
+    value = raw.strip().lower()
+    if value == "xhigh":
+        return "max"
+    return value if value in _EFFORTS else default
+
+
+@dataclass
+class Provider:
+    name: str
+    base_url: str
+    model: str
+    api_key: str = ""
+    extra_headers: dict[str, str] = field(default_factory=dict)
+    extra_payload: dict[str, Any] = field(default_factory=dict)
+
+
+_PROVIDER_ALIASES = {
+    "local": "local",
+    "deepseek": "deepseek",
+    "opencode_go": "opencode_go",
+    "opencode-go": "opencode_go",
+    "opencode": "opencode_go",
+    "go": "opencode_go",
+}
+
+
+def normalize_provider_name(raw: str) -> str | None:
+    return _PROVIDER_ALIASES.get(raw.strip().lower())
+
+
+def _deepseek_payload(env: Mapping[str, str]) -> dict[str, Any]:
+    if not _is_on(env, "LLM_DEEPSEEK_THINKING", "on"):
+        return {"thinking": {"type": "disabled"}}
+    effort = _norm_effort(env.get("LLM_DEEPSEEK_REASONING_EFFORT", "high"))
+    # DeepSeek 官方契约（Hermes 实机验证）：显式 thinking 开关 + 顶层 reasoning_effort
+    return {"thinking": {"type": "enabled"}, "reasoning_effort": effort}
+
+
+def _opencode_payload(env: Mapping[str, str]) -> dict[str, Any]:
+    if not _is_on(env, "LLM_OPENCODE_GO_THINKING", "on"):
+        return {"thinking": {"type": "disabled"}}
+    effort = _norm_effort(env.get("LLM_OPENCODE_GO_REASONING_EFFORT", "high"))
+    # Go 中转对 deepseek-v* 型号：只发顶层 reasoning_effort（与 Hermes opencode-go 插件实际做法一致）
+    return {"reasoning_effort": effort}
+
+
+def _build_providers(env: Mapping[str, str]) -> dict[str, Provider]:
+    return {
+        "local": Provider(
+            name="local",
+            base_url=env.get("LLM_LOCAL_BASE_URL", "http://127.0.0.1:8080/v1"),
+            model=env.get("LLM_LOCAL_MODEL", "qwen"),
+            api_key=_get_key(env, "LLM_LOCAL_API_KEY"),
+        ),
+        "deepseek": Provider(
+            name="deepseek",
+            base_url=env.get("LLM_DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
+            model=env.get("LLM_DEEPSEEK_MODEL", "deepseek-flash"),
+            api_key=_get_key(env, "LLM_DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY"),
+            extra_payload=_deepseek_payload(env),
+        ),
+        "opencode_go": Provider(
+            name="opencode_go",
+            base_url=env.get("LLM_OPENCODE_GO_BASE_URL", "https://opencode.ai/zen/go/v1"),
+            model=env.get("LLM_OPENCODE_GO_MODEL", "deepseek-v4.1-flash"),
+            api_key=_get_key(env, "LLM_OPENCODE_GO_API_KEY", "OPENCODE_GO_API_KEY", "OPENCODE_API_KEY"),
+            extra_payload=_opencode_payload(env),
+        ),
+    }
+
+
+def _parse_provider_list(raw: str, known: set[str]) -> list[str]:
+    names: list[str] = []
+    for part in raw.split(","):
+        name = normalize_provider_name(part)
+        if name and name in known and name not in names:
+            names.append(name)
+    return names
+
+
+@dataclass
+class Config:
+    allowed_group_ids: set[int] = field(default_factory=set)
+    bot_name: str = "朋友群小助手"
+    llm_enabled: bool = False
+    llm_provider: str = "local"
+    llm_fallbacks: list[str] = field(default_factory=list)
+    llm_reply_mode: str = "all"
+    llm_system_prompt: str = ""
+    llm_max_tokens: int = 2000
+    llm_cooldown: float = 5.0
+    llm_timeout: float = 180.0
+    llm_show_provider: bool = False
+    llm_show_reasoning: bool = False
+    providers: dict[str, Provider] = field(default_factory=dict)
+
+
+def load_config(env: Mapping[str, str] | None = None) -> Config:
+    if env is None:
+        merged: dict[str, str] = {**_read_dotenv(_DOTENV_PATH), **os.environ}
+        env = merged
+    providers = _build_providers(env)
+    primary = normalize_provider_name(env.get("LLM_PROVIDER", "local")) or "local"
+    if primary not in providers:
+        primary = "local"
+    fallbacks = [
+        name for name in _parse_provider_list(env.get("LLM_FALLBACKS", ""), set(providers)) if name != primary
+    ]
+    reply_mode = env.get("LLM_REPLY_MODE", "mention").strip().lower()
+    if reply_mode not in _REPLY_MODES:
+        reply_mode = "mention"
+    # 人设（system prompt）：LLM_SYSTEM_PROMPT 直写（支持 \n 转义）优先；
+    # 否则读取 LLM_PERSONA_FILE 指向的人设文件（相对路径基于 bot/ 目录）
+    system_prompt = env.get("LLM_SYSTEM_PROMPT", "").strip().replace("\\n", "\n")
+    if not system_prompt:
+        persona_file = env.get("LLM_PERSONA_FILE", "").strip()
+        if persona_file:
+            persona_path = Path(persona_file)
+            if not persona_path.is_absolute():
+                persona_path = _DOTENV_PATH.parent / persona_path
+            try:
+                if persona_path.is_file():
+                    system_prompt = persona_path.read_text(encoding="utf-8").strip()
+            except OSError:
+                system_prompt = ""
+    return Config(
+        allowed_group_ids=_parse_ids(env.get("ALLOWED_GROUP_IDS", "")),
+        bot_name=env.get("BOT_NAME", "朋友群小助手"),
+        llm_enabled=env.get("LLM_ENABLED", "0").strip().lower() in _ON_VALUES,
+        llm_provider=primary,
+        llm_fallbacks=fallbacks,
+        llm_reply_mode=reply_mode,
+        llm_system_prompt=system_prompt,
+        llm_max_tokens=int(env.get("LLM_MAX_TOKENS", "2000")),
+        llm_cooldown=float(env.get("LLM_COOLDOWN", "5")),
+        llm_timeout=float(env.get("LLM_TIMEOUT", "180")),
+        llm_show_provider=_is_on(env, "LLM_SHOW_PROVIDER", "0"),
+        llm_show_reasoning=_is_on(env, "LLM_SHOW_REASONING", "0"),
+        providers=providers,
+    )
+
+
+_config: Config | None = None
+
+
+def get_config() -> Config:
+    """进程级单例；首次调用时读取 .env。"""
+    global _config
+    if _config is None:
+        _config = load_config()
+    return _config
