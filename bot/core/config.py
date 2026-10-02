@@ -145,7 +145,7 @@ def _parse_provider_list(raw: str, known: set[str]) -> list[str]:
 @dataclass
 class Config:
     allowed_group_ids: set[int] = field(default_factory=set)
-    bot_name: str = "朋友群小助手"
+    bot_name: str = "十九"
     llm_enabled: bool = False
     llm_provider: str = "local"
     llm_fallbacks: list[str] = field(default_factory=list)
@@ -198,7 +198,7 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
                 system_prompt = ""
     return Config(
         allowed_group_ids=_parse_ids(env.get("ALLOWED_GROUP_IDS", "")),
-        bot_name=env.get("BOT_NAME", "朋友群小助手"),
+        bot_name=env.get("BOT_NAME", "十九"),
         llm_enabled=env.get("LLM_ENABLED", "0").strip().lower() in _ON_VALUES,
         llm_provider=primary,
         llm_fallbacks=fallbacks,

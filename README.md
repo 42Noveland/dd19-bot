@@ -1,6 +1,6 @@
 # 朋友群 QQ 机器人（NapCat Node 版 + NoneBot2）
 
-小号 **123456789**（群昵称 dd19；人设名 **Nova**，猫娘）在本机 Windows 常驻，
+小号 **123456789**（群昵称 dd19；人设名 **十九**，普通朋友风格）在本机 Windows 常驻，
 接入两个白名单群；LLM 支持三后端（本机 llama.cpp / DeepSeek 官方 / opencode-go 中转）。
 
 - 测试群：111111111 ｜ 朋友群：222222222
@@ -13,7 +13,7 @@
 D:\agent-workspace\qqbot\
 ├─ bot\                      NoneBot2 工程（核心/插件/测试/人设）
 │   ├─ bot.py                入口（OneBot v11 适配器 + 插件加载）
-│   ├─ persona.md            猫娘 Nova 人设（system prompt，可编辑）
+│   ├─ persona.md            人设「十九」（system prompt，可编辑）
 │   ├─ start-bot.cmd         一键启动脚本
 │   └─ tests\e2e\fake_napcat.py  全链路自测脚本
 ├─ napcat\NapCat.Shell.Node\ NapCat 协议端（Node 版，自带 QQ 纯 shell 核心）
@@ -62,7 +62,7 @@ D:\agent-workspace\qqbot\
 
 ## 行为说明
 
-- **触发**：@dd19（真实 @ 或文字形式"@dd19"均可）或引用回复机器人消息 → 猫娘聊天；
+- **触发**：@dd19（真实 @ 或文字形式"@dd19"均可）或引用回复机器人消息 → 聊天（人设「十九」）；
   命令（/ping 等）直接发即可，无需 @；非白名单群完全静默。
 - **联网搜索**：LLM 按需调用 `web_search` 工具（天气/新闻/价格/事实核查类问题会自动搜，
   回复附参考链接）；也可手动 `/search 关键词`。搜索走 Firecrawl API。
@@ -117,9 +117,10 @@ D:\agent-workspace\qqbot\
   - 测试群与朋友群：`/ping` → `pong!`（含"文字@"形式）✔
   - `@dd19 一句话介绍你自己` → AI 回复 ✔
   - 默认模型 **opencode_go / deepseek-v4.1-flash**（思考 medium）；链路实测 ✔
-  - **猫娘 Nova 完整 SOUL** 注入并实测 ✔（回复带动作描写与"喵~"风格）
+  - **人设「十九」**（普通朋友风格，参考百度智能云《人设prompt撰写最佳实践》"林晚"示例等
+    公开模板改写）替换猫娘并实测 ✔（自然口语、无卖萌、身份如实）
   - **联网搜索**：@dd19 "帮我搜一下北京今天的天气" → 自动搜索并作答（附来源）✔；
-    `/search 北京今天天气` → Nova 风格总结 + 参考链接 ✔
+    `/search 北京今天天气` → 自然口语总结 + 参考链接 ✔
   - **Token 预算**：单次会话上限 10w、单日上限 1kw 生效；记账持久化于
     `bot/logs/token-usage.json`（重启不丢、按北京时间跨天重置）；超限固定回复「白饭吃完了QAQ」✔
 - 未做/待办：本机 llama（local 后端）实机测试（需先启动 start-qwen38.cmd 后 `/model test local`）；
