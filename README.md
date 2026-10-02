@@ -1,9 +1,9 @@
 # 朋友群 QQ 机器人（NapCat Node 版 + NoneBot2）
 
 小号 **123456789**（群昵称 dd19；人设名 **十九**，普通朋友风格）在本机 Windows 常驻，
-接入两个白名单群；LLM 支持三后端（本机 llama.cpp / DeepSeek 官方 / opencode-go 中转）。
+接入三个白名单群；LLM 支持三后端（本机 llama.cpp / DeepSeek 官方 / opencode-go 中转）。
 
-- 测试群：111111111 ｜ 朋友群：222222222
+- 测试群：111111111 ｜ 朋友群：222222222 ｜ 新群：333333333
 - 管理员（/model 指令）：1234567890
 - 机器人：123456789（昵称 dd19）
 
@@ -43,7 +43,7 @@ D:\agent-workspace\qqbot\
 
 | 键 | 当前值 | 说明 |
 |---|---|---|
-| ALLOWED_GROUP_IDS | 111111111,222222222 | 白名单群（留空=全不响应） |
+| ALLOWED_GROUP_IDS | 111111111,222222222,333333333 | 白名单群（留空=全不响应） |
 | SUPERUSERS | ["1234567890"] | /model 管理员 |
 | LLM_ENABLED | 1 | 聊天总开关 |
 | LLM_PROVIDER | opencode_go | 主选后端（deepseek-v4.1-flash） |
