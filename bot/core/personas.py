@@ -93,15 +93,31 @@ def clear_group(group_id: int) -> None:
 
 
 def resolve(group_id: int) -> tuple[str, str]:
-    """解析该群的人设：(名字, 文本)。本群有自定义且文件可读 → 用它；否则用默认。"""
+    """解析该群的人设：(名字, 文本)。本群有自定义且文件可读 → 用它；否则用默认。
+    已批准的本群学习补充会拼在文本尾部（不改 md 原文，/persona patch rm 可回滚）。"""
     stem = get_group_stem(group_id)
     if stem:
         text, name = _load(_BASE / f"{stem}.md")
         if text:
-            return name or stem, text
+            name = name or stem
+            return name, _with_patches(group_id, name, text)
     cfg = get_config()
     name = _extract_name(cfg.llm_system_prompt) or cfg.bot_name
-    return name, cfg.llm_system_prompt
+    return name, _with_patches(group_id, name, cfg.llm_system_prompt)
+
+
+def _with_patches(group_id: int, name: str, text: str) -> str:
+    """把已批准的本群学习补充拼在人设尾部（persona_patches 表；/persona patch rm 可回滚）。"""
+    try:
+        from . import persona_evo  # 延迟导入避免环
+
+        patches = persona_evo.patches_for(group_id, name)
+    except Exception:  # noqa: BLE001 —— 补充读取失败不影响人设
+        return text
+    if not patches:
+        return text
+    lines = "\n".join(f"- {t}" for _, t in patches)
+    return f"{text}\n\n【本群学习补充（管理员已批准）】\n{lines}"
 
 
 def name_for(group_id: int) -> str:

@@ -168,6 +168,9 @@ class Config:
     style_tick: int = 300
     jargon_enabled: bool = True
     jargon_tick: int = 600
+    affection_enabled: bool = True
+    persona_evo_enabled: bool = True
+    persona_evo_tick: int = 86400
     providers: dict[str, Provider] = field(default_factory=dict)
 
 
@@ -242,6 +245,9 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         style_tick=int(float(env.get("STYLE_TICK", "300"))),
         jargon_enabled=_is_on(env, "JARGON_ENABLED", "1"),
         jargon_tick=int(float(env.get("JARGON_TICK", "600"))),
+        affection_enabled=_is_on(env, "AFFECTION_ENABLED", "1"),
+        persona_evo_enabled=_is_on(env, "PERSONA_EVO_ENABLED", "1"),
+        persona_evo_tick=int(float(env.get("PERSONA_EVO_TICK", "86400"))),
         providers=providers,
     )
 

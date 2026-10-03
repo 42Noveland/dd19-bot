@@ -123,6 +123,31 @@ def _db() -> sqlite3.Connection:
                 updated_ts REAL NOT NULL,
                 UNIQUE(group_id, term)
             );
+            CREATE TABLE IF NOT EXISTS affection (
+                group_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                name TEXT NOT NULL DEFAULT '',
+                level INTEGER NOT NULL DEFAULT 0,
+                last_ts REAL NOT NULL,
+                PRIMARY KEY(group_id, user_id)
+            );
+            CREATE TABLE IF NOT EXISTS persona_proposals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id INTEGER NOT NULL,
+                persona TEXT NOT NULL DEFAULT '',
+                text TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                created_ts REAL NOT NULL,
+                updated_ts REAL NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS persona_patches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id INTEGER NOT NULL,
+                persona TEXT NOT NULL DEFAULT '',
+                text TEXT NOT NULL,
+                proposal_id INTEGER NOT NULL DEFAULT 0,
+                created_ts REAL NOT NULL
+            );
             """
         )
         conn.commit()

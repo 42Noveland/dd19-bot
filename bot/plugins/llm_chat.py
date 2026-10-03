@@ -14,7 +14,7 @@ from nonebot.params import CommandArg
 from nonebot.permission import SUPERUSER
 from nonebot.rule import Rule
 
-from core import budget, context, jargon, llm, memory, mood, personas, search, stickers, style_pairs
+from core import affection, budget, context, jargon, llm, memory, mood, persona_evo, personas, search, stickers, style_pairs
 from core.config import get_config, normalize_provider_name
 from core.gate import is_allowed_group, render_message_text, should_reply_plain, strip_text_mention
 from plugins._shared import resolve_at_names, sender_name
@@ -197,6 +197,15 @@ async def chat_flow(
             if jargon_block:
                 blocks.append(jargon_block)
         except Exception:  # noqa: BLE001 —— 黑话异常不影响聊天
+            pass
+    if cfg.affection_enabled and addressed:
+        try:
+            # 先结算这次互动（回复前更新，回复就能带上最新关系）
+            affection.update(event.group_id, event.user_id, sender_name(event), text)
+            aff_block = affection.for_prompt(event.group_id, event.user_id, sender_name(event))
+            if aff_block:
+                blocks.append(aff_block)
+        except Exception:  # noqa: BLE001 —— 好感度异常不影响聊天
             pass
     if cfg.mood_enabled:
         try:
@@ -399,9 +408,12 @@ async def _handle_model(args: Message = CommandArg()) -> None:
 
 @persona_cmd.handle()
 async def _handle_persona(event: GroupMessageEvent, args: Message = CommandArg()) -> None:
-    """按群人设切换（仅管理员；立即生效，无需重启）。"""
+    """按群人设切换 + 学习补充审查（仅管理员；立即生效，无需重启）。"""
     gid = int(event.group_id)
-    parts = args.extract_plain_text().strip().split(maxsplit=1)
+    parts = args.extract_plain_text().strip().split()
+    if parts and parts[0].lower() in ("review", "approve", "reject", "evolve", "patches", "patch"):
+        await persona_cmd.finish(await persona_evo.handle_command(gid, parts, get_config()))
+        return
     if parts and parts[0].lower() == "default":
         personas.clear_group(gid)
         name, _ = personas.resolve(gid)
@@ -419,7 +431,10 @@ async def _handle_persona(event: GroupMessageEvent, args: Message = CommandArg()
     name, _ = personas.resolve(gid)
     stem = personas.get_group_stem(gid)
     names = " / ".join(p["name"] for p in personas.list_personas())
+    pending = persona_evo.pending_count(gid)
+    extra = f"\n待审学习建议 {pending} 条（/persona review）" if pending else ""
     await persona_cmd.finish(
         f"当前人设：{name}" + ("（本群自定义）" if stem else "（默认）")
-        + f"\n可用：{names}\n用法：/persona <名字> 切换；/persona default 恢复默认"
+        + f"\n可用：{names}{extra}\n"
+        "用法：/persona <名字> 切换；/persona default 恢复默认；/persona evolve 生成学习建议；/persona review 查看待审"
     )
