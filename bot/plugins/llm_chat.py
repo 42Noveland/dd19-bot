@@ -115,25 +115,43 @@ def _make_sticker_handler(bot: Bot, event: GroupMessageEvent):
     return _handler
 
 
-async def _reply_out(matcher, event: GroupMessageEvent, text: str) -> None:
+async def _send_reply(send, event: GroupMessageEvent, text: str) -> None:
     """发送聊天回复：带引用段（引用触发消息；QUOTE_REPLY_ENABLED=0 可关）。"""
     cfg = get_config()
     msg: str | Message = text
     mid = getattr(event, "message_id", None)
     if cfg.quote_reply_enabled and mid:
         msg = MessageSegment.reply(int(mid)) + text
-    await matcher.finish(msg)
+    await send(msg)
 
 
-async def _reply_chat(bot: Bot, matcher, event: GroupMessageEvent, text: str) -> None:
-    """公共聊天流程：总开关 → 配额 → 限频 → 群上下文组装 → 主选+回退链 → 组装回复。"""
+async def chat_flow(
+    bot: Bot,
+    event: GroupMessageEvent,
+    text: str,
+    send,
+    *,
+    quiet_skip: bool = False,
+    extra_note: str = "",
+    addressed: bool = True,
+) -> None:
+    """公共聊天核心：总开关 → 配额 → 限频 → 群上下文组装 → 主选+回退链 → 发送 → 记账。
+
+    quiet_skip=True（决策层主动接话）：配额/限频/失败一律静默跳过，绝不刷提示；
+    addressed=False：消息并非对机器人说（主动接话场景，prompt 措辞不同）。
+    """
     cfg = get_config()
     if not cfg.llm_enabled:
-        await _reply_out(matcher, event, "聊天功能未启用（把 bot/.env 里 LLM_ENABLED 改为 1 并重启）")
+        if not quiet_skip:
+            await _send_reply(send, event, "聊天功能未启用（把 bot/.env 里 LLM_ENABLED 改为 1 并重启）")
+        return
     if budget.exhausted():
-        await _reply_out(matcher, event, cfg.llm_quota_reply)
-    if not llm.allow(event.group_id, event.user_id):
-        await _reply_out(matcher, event, "说得太快啦，稍等几秒再聊")
+        if not quiet_skip:
+            await _send_reply(send, event, cfg.llm_quota_reply)
+        return
+    if not quiet_skip and not llm.allow(event.group_id, event.user_id):
+        await _send_reply(send, event, "说得太快啦，稍等几秒再聊")
+        return
     prompt = text
     if cfg.llm_context_messages > 0:
         # 群上下文：取触发消息之前最近几条（触发消息此刻已在库，需剔除）
@@ -142,18 +160,19 @@ async def _reply_chat(bot: Bot, matcher, event: GroupMessageEvent, text: str) ->
             for row in context.recent_messages(event.group_id, limit=cfg.llm_context_messages + 1)
             if str(row.get("message_id")) != str(event.message_id)
         ][-cfg.llm_context_messages :]
-        prompt = context.format_context_prompt(history, sender_name(event), text)
+        prompt = context.format_context_prompt(history, sender_name(event), text, addressed=addressed)
     extra_tools = None
     tool_handler = None
-    extra_system = ""
+    extra_system = extra_note
     if cfg.sticker_enabled:
         try:
             if context.sticker_count() > 0:
                 extra_tools = [stickers.tool_spec()]
                 tool_handler = _make_sticker_handler(bot, event)
-                extra_system = stickers.chat_hint()
+                hint = stickers.chat_hint()
+                extra_system = f"{hint}\n\n{extra_note}" if extra_note else hint
         except Exception:  # noqa: BLE001 —— 贴图库异常不影响聊天
-            extra_tools, tool_handler, extra_system = None, None, ""
+            extra_tools, tool_handler, extra_system = None, None, extra_note
     try:
         reply = await llm.chat(
             prompt,
@@ -163,10 +182,12 @@ async def _reply_chat(bot: Bot, matcher, event: GroupMessageEvent, text: str) ->
             extra_system=extra_system,
         )
     except llm.QuotaExceededError:
-        await _reply_out(matcher, event, cfg.llm_quota_reply)
+        if not quiet_skip:
+            await _send_reply(send, event, cfg.llm_quota_reply)
         return
     except Exception as exc:  # noqa: BLE001 —— 所有后端都失败时给用户明确提示
-        await _reply_out(matcher, event, f"AI 调用失败（所有后端）：{exc}")
+        if not quiet_skip:
+            await _send_reply(send, event, f"AI 调用失败（所有后端）：{exc}")
         return
     out = _format_reply(reply)
     try:
@@ -174,7 +195,12 @@ async def _reply_chat(bot: Bot, matcher, event: GroupMessageEvent, text: str) ->
         context.record_message(event.group_id, int(event.self_id), cfg.bot_name, out)
     except Exception:  # noqa: BLE001 —— 记录失败不影响回复
         pass
-    await _reply_out(matcher, event, out)
+    await _send_reply(send, event, out)
+
+
+async def _reply_chat(bot: Bot, matcher, event: GroupMessageEvent, text: str) -> None:
+    """@/命令触发的聊天入口：走公共核心，提示照常可见。"""
+    await chat_flow(bot, event, text, matcher.finish)
 
 
 @chat_all.handle()

@@ -155,6 +155,9 @@ class Config:
     vision_timeout: float = 60.0
     sticker_enabled: bool = True
     quote_reply_enabled: bool = True
+    auto_reply_enabled: bool = True
+    auto_reply_chance: float = 0.35
+    auto_reply_cooldown: int = 240
     providers: dict[str, Provider] = field(default_factory=dict)
 
 
@@ -216,6 +219,9 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         vision_timeout=float(env.get("VISION_TIMEOUT", "60")),
         sticker_enabled=_is_on(env, "STICKER_ENABLED", "1"),
         quote_reply_enabled=_is_on(env, "QUOTE_REPLY_ENABLED", "1"),
+        auto_reply_enabled=_is_on(env, "AUTO_REPLY_ENABLED", "1"),
+        auto_reply_chance=float(env.get("AUTO_REPLY_CHANCE", "0.35")),
+        auto_reply_cooldown=int(float(env.get("AUTO_REPLY_COOLDOWN", "240"))),
         providers=providers,
     )
 

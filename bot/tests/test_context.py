@@ -50,3 +50,10 @@ def test_format_context_prompt():
     assert "丁 对你说" in out and "你们决定了吗" in out
     # 无历史时退化为简单格式
     assert context.format_context_prompt([], "丁", "在吗") == "丁 对你说：在吗"
+
+
+def test_format_context_prompt_not_addressed():
+    out = context.format_context_prompt([], "小明", "今天吃啥", addressed=False)
+    assert "对你说" not in out and "小明" in out and "今天吃啥" in out
+    out2 = context.format_context_prompt([{"name": "A", "text": "hi"}], "小明", "今天吃啥", addressed=False)
+    assert "对你说" not in out2 and "没有人 @ 你" in out2

@@ -75,3 +75,17 @@ def render_message_text(message, self_id: str, names: dict[str, str] | None = No
             qq = str(seg.data.get("qq", ""))
             parts.append("@全体成员" if qq == "all" else "@" + names.get(qq, qq))
     return "".join(parts).strip()
+
+
+def mentions_name(text: str, names: list[str]) -> bool:
+    """文本里是否提到机器人（名字/昵称/机器人字样）；用于主动接话的概率门豁免。"""
+    if not text:
+        return False
+    return any(bool(n) and n in text for n in names)
+
+
+def parse_judge_verdict(text: str) -> bool:
+    """解析主动接话判断：第一行含「接」且不含「不接」→ 接；解析失败按不接（保守）。"""
+    body = (text or "").strip()
+    first = body.splitlines()[0].strip() if body else ""
+    return ("接" in first) and ("不接" not in first)

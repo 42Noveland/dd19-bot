@@ -67,6 +67,41 @@ async def wait_reply(ws, timeout: float = 200.0) -> str:
             await ws.send(json.dumps({"status": "ok", "retcode": 0, "data": data, "echo": echo}))
 
 
+async def wait_reply_containing(ws, needle: str, timeout: float = 220.0) -> str:
+    """等待包含指定关键词的回复（跳过不相干的主动接话等消息）。"""
+    deadline = time.time() + timeout
+    while True:
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            return ""
+        try:
+            raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
+        except asyncio.TimeoutError:
+            return ""
+        d = json.loads(raw)
+        action = d.get("action")
+        echo = d.get("echo")
+        if action == "send_msg":
+            msg = d.get("params", {}).get("message")
+            if isinstance(msg, list):
+                text = "".join(str(s.get("data", {}).get("text", "")) for s in msg if s.get("type") == "text")
+            else:
+                text = str(msg)
+            await ws.send(json.dumps({"status": "ok", "retcode": 0, "data": {"message_id": 1}, "echo": echo}))
+            if needle in text:
+                return text
+            continue
+        if action:
+            if action == "get_login_info":
+                data = {"user_id": SELF_ID, "nickname": "dd19"}
+            elif action == "get_group_member_info":
+                uid = d.get("params", {}).get("user_id")
+                data = {"user_id": uid, "nickname": f"用户{uid}", "card": f"用户{uid}"}
+            else:
+                data = {}
+            await ws.send(json.dumps({"status": "ok", "retcode": 0, "data": data, "echo": echo}))
+
+
 async def main() -> None:
     img_url = sys.argv[1] if len(sys.argv) > 1 else ""
     base = int(time.time()) % 10**6 * 10  # 时间戳派生消息 id，避免重跑时被去重
@@ -75,7 +110,7 @@ async def main() -> None:
         await ws.send(json.dumps(ev([txt("我最喜欢的数字是73")], base + 1, 29911, "小明")))
         await asyncio.sleep(2)
         await ws.send(json.dumps(ev([at_bot(), txt("我最喜欢的数字是几？")], base + 2, 29911, "小明")))
-        r1 = await wait_reply(ws)
+        r1 = await wait_reply_containing(ws, "73")
         print("[A 上下文记忆] ->", r1[:220])
         print("  >> 期望包含 73 :", "73" in r1)
         print("---")
@@ -84,7 +119,7 @@ async def main() -> None:
             await ws.send(json.dumps(ev([{"type": "image", "data": {"url": img_url, "file": "vision_test.png", "summary": ""}}], base + 3, 29913, "小刚")))
             await asyncio.sleep(12)  # 等异步 caption（下载 + 云 vision）
             await ws.send(json.dumps(ev([at_bot(), txt("刚才那张图里，苹果数量是多少？")], base + 4, 29914, "小丽")))
-            r2 = await wait_reply(ws)
+            r2 = await wait_reply_containing(ws, "42")
             print("[B 图片识别] ->", r2[:220])
             print("  >> 期望包含 42 :", "42" in r2)
         else:

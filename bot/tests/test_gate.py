@@ -1,5 +1,12 @@
 from core.config import Config
-from core.gate import is_allowed_group, render_message_text, should_reply_plain, strip_text_mention
+from core.gate import (
+    is_allowed_group,
+    mentions_name,
+    parse_judge_verdict,
+    render_message_text,
+    should_reply_plain,
+    strip_text_mention,
+)
 
 
 def test_allowed_group_only():
@@ -66,3 +73,18 @@ def test_render_message_text_at_all_and_plain():
     assert render_message_text(msg, "123456789") == "hi @全体成员"
     assert render_message_text([_Seg("text", {"text": "普通消息"})], "123456789") == "普通消息"
     assert render_message_text([_Seg("at", {"qq": "123456789"})], "123456789") == ""
+
+
+def test_mentions_name():
+    assert mentions_name("dd19 你在吗", ["十九", "dd19"]) is True
+    assert mentions_name("今天吃啥", ["十九", "dd19"]) is False
+    assert mentions_name("", ["十九"]) is False
+
+
+def test_parse_judge_verdict():
+    assert parse_judge_verdict("接") is True
+    assert parse_judge_verdict("接\n这条挺有意思") is True
+    assert parse_judge_verdict("不接") is False
+    assert parse_judge_verdict("不接，他们在私聊") is False
+    assert parse_judge_verdict("") is False
+    assert parse_judge_verdict("……") is False

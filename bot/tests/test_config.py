@@ -123,3 +123,12 @@ def test_sticker_config_parse():
 def test_quote_reply_config_parse():
     assert load_config({}).quote_reply_enabled is True
     assert load_config({"QUOTE_REPLY_ENABLED": "0"}).quote_reply_enabled is False
+
+
+def test_auto_reply_config_parse():
+    cfg = load_config({})
+    assert cfg.auto_reply_enabled is True
+    assert abs(cfg.auto_reply_chance - 0.35) < 1e-9
+    assert cfg.auto_reply_cooldown == 240
+    cfg2 = load_config({"AUTO_REPLY_ENABLED": "0", "AUTO_REPLY_CHANCE": "0.5", "AUTO_REPLY_COOLDOWN": "60"})
+    assert cfg2.auto_reply_enabled is False and cfg2.auto_reply_cooldown == 60

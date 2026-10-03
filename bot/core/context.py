@@ -231,10 +231,14 @@ def sticker_candidates(limit: int = 500) -> list[dict]:
 
 # ---------------- prompt 组装 ----------------
 
-def format_context_prompt(history: list[dict], speaker: str, text: str) -> str:
-    """把群聊历史 + 当前消息组装成给 LLM 的最终 prompt（纯函数，可单测）。"""
+def format_context_prompt(history: list[dict], speaker: str, text: str, addressed: bool = True) -> str:
+    """把群聊历史 + 当前消息组装成给 LLM 的最终 prompt（纯函数，可单测）。
+
+    addressed=False：消息并非直接对机器人说（决策层主动接话场景），措辞不同。
+    """
+    tail = f"{speaker} 对你说：{text}" if addressed else f"群里 {speaker} 说：{text}"
     if not history:
-        return f"{speaker} 对你说：{text}"
+        return tail
     lines: list[str] = []
     for row in history:
         name = str(row.get("name") or row.get("user_id") or "?")
@@ -242,9 +246,10 @@ def format_context_prompt(history: list[dict], speaker: str, text: str) -> str:
         if content:
             lines.append(f"{name}: {content}")
     if not lines:
-        return f"{speaker} 对你说：{text}"
+        return tail
+    now = f"【现在，{speaker} 对你说】" if addressed else f"【现在，群里 {speaker} 说（没有人 @ 你）】"
     return (
         "【群聊背景（最近几条消息，供你了解上下文，不用逐条回应）】\n"
         + "\n".join(lines)
-        + f"\n\n【现在，{speaker} 对你说】\n{text}"
+        + f"\n\n{now}\n{text}"
     )
