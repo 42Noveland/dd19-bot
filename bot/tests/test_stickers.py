@@ -1,3 +1,7 @@
+import time
+
+import pytest
+
 from core import context, stickers
 
 
@@ -93,3 +97,30 @@ def test_library_summary(tmp_path):
     assert "黑猫歪头震惊" in out and out.startswith("1.")
     context.reset(tmp_path / "ctx2.db")
     assert stickers.library_summary() == ""
+
+
+def _age_image(md5: str, days: float) -> None:
+    """把图片的最后出现时间改老（测试衰减用）。"""
+    with context._lock:
+        conn = context._db()
+        conn.execute("UPDATE images SET last_ts=? WHERE md5=?", (time.time() - days * 86400, md5))
+        conn.commit()
+
+
+def test_freshness_curve():
+    now = time.time()
+    assert stickers._freshness({"last_ts": now}) == pytest.approx(1.0)
+    assert 0.7 < stickers._freshness({"last_ts": now - 7.5 * 86400}) < 0.9
+    assert stickers._freshness({"last_ts": now - 20 * 86400}) == pytest.approx(0.2)
+    assert stickers._freshness({}) == pytest.approx(0.2)
+
+
+def test_pick_prefers_fresh_on_tie(tmp_path):
+    """同样关键词命中时，新鲜图优先于 15 天没出现的旧图。"""
+    context.reset(tmp_path / "ctx.db")
+    stickers.reset()
+    _mk(tmp_path, "old.jpg", "表达得意的坏笑")
+    _mk(tmp_path, "new.jpg", "表达得意的坏笑")
+    _age_image("old.jpg", 20)
+    row = stickers.pick("得意", 1)
+    assert row is not None and row["md5"] == "new.jpg"

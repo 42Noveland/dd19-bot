@@ -472,3 +472,30 @@ def test_system_prompt_override(monkeypatch):
     content = requests[0]["messages"][0]["content"]
     assert content.startswith("群专属人设")
     assert "默认人设" not in content
+
+
+def test_dynamic_blocks_appended_to_user(monkeypatch):
+    """dynamic_blocks 应拼在用户消息尾部；system 只含人设+固定规则（保前缀缓存）。"""
+    cfg = load_config({"OPENCODE_GO_API_KEY": "ok", "LLM_SYSTEM_PROMPT": "稳定人设"})
+    monkeypatch.setattr(core_config, "_config", cfg, raising=False)
+    requests: list[dict] = []
+
+    def h(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": "好"}}]})
+
+    asyncio.run(
+        llm.chat_once(
+            "在吗",
+            cfg.providers["opencode_go"],
+            transport=httpx.MockTransport(h),
+            extra_system="【固定规则】",
+            dynamic_blocks="【动态块】现在有点得意",
+        )
+    )
+    msgs = requests[0]["messages"]
+    assert "稳定人设" in msgs[0]["content"] and "【固定规则】" in msgs[0]["content"]
+    assert "动态块" not in msgs[0]["content"]  # system 保持稳定
+    assert msgs[-1]["role"] == "user"
+    assert msgs[-1]["content"].startswith("在吗")
+    assert "【动态块】现在有点得意" in msgs[-1]["content"]

@@ -204,7 +204,7 @@ async def chat_flow(
             extra_tools, tool_handler = None, None
     if extra_note:
         blocks.append(extra_note)
-    extra_system = "\n\n".join(blocks)
+    dynamic_blocks = "\n\n".join(blocks)  # 动态块拼用户消息尾部（保 system 前缀缓存）
     persona_name, persona_text = personas.resolve(event.group_id)
     try:
         reply = await llm.chat(
@@ -212,7 +212,7 @@ async def chat_flow(
             session_key=f"qqbot-group-{event.group_id}",
             extra_tools=extra_tools,
             tool_handler=tool_handler,
-            extra_system=extra_system,
+            dynamic_blocks=dynamic_blocks,
             system_prompt_override=persona_text,
         )
     except llm.QuotaExceededError:

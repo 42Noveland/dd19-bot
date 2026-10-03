@@ -1,7 +1,7 @@
 """贴图库：从群消息收集的图片里挑表情包来回应（send_sticker 工具的后端）。
 
 - 资源来自感知层（core.context.images 表）：群里出现过的图都被识别并打标（caption）。
-- 挑选：query 关键词（CJK bigram + ASCII 词）与 caption 匹配，人气（seen_count）微加成；
+- 挑选：query 关键词（CJK bigram + ASCII 词）与 caption 匹配，人气微加成 × 15 天新鲜度衰减（借鉴 self-learning）；
   同群近期发过的图不再重复（10 分钟窗口）；完全匹配不上就不硬发（返回 None）。
 - 发送记录暂存内存（进程级）；后续"斗图学习"（按反应加权）再加持久化。
 """
@@ -15,6 +15,10 @@ from pathlib import Path
 from . import context
 
 _recent_window = 600.0  # 同群重复抑制窗口（秒）
+
+# 热度衰减（借鉴 self-learning 的 15 天二次曲线）：新鲜度 1.0 → 0.2，老图降权但不删除
+_DECAY_DAYS = 15.0
+_DECAY_FLOOR = 0.2
 _last_sent: dict[int, list[tuple[str, float]]] = {}
 
 
@@ -37,9 +41,15 @@ def chat_hint() -> str:
 def library_summary(limit: int = 12) -> str:
     """图库清单（喂给模型挑 query）：序号 + 简短描述。"""
     try:
-        rows = context.sticker_candidates(limit=limit)
+        rows = context.sticker_candidates(limit=max(limit * 3, limit))
     except Exception:  # noqa: BLE001
         return ""
+    # 按 人气×新鲜度 重排（避免陈年旧图霸榜清单）
+    rows = sorted(
+        rows,
+        key=lambda r: min(int(r.get("seen_count") or 1), 5) * _freshness(r),
+        reverse=True,
+    )[:limit]
     items: list[str] = []
     for i, row in enumerate(rows, 1):
         cap = str(row.get("caption") or "").strip()
@@ -116,6 +126,22 @@ def _recent_md5s(group_id: int) -> set[str]:
     return {md5 for md5, _ in _last_sent[group_id]}
 
 
+def _freshness(row: dict) -> float:
+    """新鲜度（1.0 → 0.2）：按最近出现时间做 15 天二次衰减（借鉴 self-learning 曲线）。
+
+    0 天 = 1.0；7.5 天 ≈ 0.8；≥15 天 = 0.2 地板——老图仍可用，只是挑选优先级降低。
+    """
+    try:
+        last = float(row.get("last_ts") or 0)
+    except (TypeError, ValueError):
+        last = 0.0
+    if last <= 0:
+        return _DECAY_FLOOR
+    days = max((time.time() - last) / 86400.0, 0.0)
+    ratio = min(days, _DECAY_DAYS) / _DECAY_DAYS
+    return 1.0 - (ratio ** 2) * (1.0 - _DECAY_FLOOR)
+
+
 def pick(query: str, group_id: int, repeat: bool = False) -> dict | None:
     """按语义相似度挑一张图；仅当图库为空/文件全失效时返回 None。
 
@@ -140,11 +166,13 @@ def pick(query: str, group_id: int, repeat: bool = False) -> dict | None:
     for row in pool:
         caption = str(row.get("caption") or "")
         kw = len(q & _keywords(caption)) if q else 0
-        pop = min(int(row.get("seen_count") or 1), 5) * 0.15
+        pop = min(int(row.get("seen_count") or 1), 5) * 0.15 * _freshness(row)
         scored.append((kw, pop, random.random(), row))
     scored.sort(key=lambda t: (t[0], t[1], t[2]), reverse=True)
     if scored[0][0] <= 0:
-        return random.choice(pool)  # 没有贴切的：随机发一张
+        # 没有贴切的：按新鲜度加权随机（老图降权但保留机会）
+        rows_ = [t[3] for t in scored]
+        return random.choices(rows_, weights=[_freshness(r) for r in rows_], k=1)[0]
     return scored[0][3]
 
 

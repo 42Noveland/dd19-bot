@@ -187,6 +187,7 @@ async def chat_once(
     tool_handler: Callable[[str, dict[str, Any]], Awaitable[str]] | None = None,
     extra_system: str = "",
     system_prompt_override: str | None = None,
+    dynamic_blocks: str = "",
 ) -> Completion:
     """向单个后端发一次请求（含工具循环：web_search + 调用方附加工具）；空正文抛 EmptyReplyError。
 
@@ -201,15 +202,21 @@ async def chat_once(
     system_prompt = system_prompt_override if system_prompt_override is not None else cfg.llm_system_prompt
     if extra_system:
         system_prompt = f"{system_prompt}\n\n{extra_system}" if system_prompt else extra_system
-    # 单次会话上限：先保证输入（人设+消息）不超上限，再把剩余额度作为输出上限
+    # 动态块（心情/图库清单/接话注记等随消息变化的上下文）拼到用户消息尾部：
+    # system 保持稳定（人设+固定规则）→ LLM API 前缀缓存命中率最大化（省 token、降延迟）
+    dyn = dynamic_blocks.strip() if dynamic_blocks else ""
+    # 单次会话上限：先保证输入（人设+消息+动态块）不超上限，再把剩余额度作为输出上限
     reserve = 256
     est_system = budget.estimate_tokens(system_prompt)
-    if est_system + budget.estimate_tokens(text) > cfg.llm_max_tokens - reserve:
-        text = budget.truncate_to_tokens(text, max(1, cfg.llm_max_tokens - reserve - est_system))
+    est_dyn = budget.estimate_tokens(dyn) if dyn else 0
+    if est_system + est_dyn + budget.estimate_tokens(text) > cfg.llm_max_tokens - reserve:
+        text = budget.truncate_to_tokens(
+            text, max(1, cfg.llm_max_tokens - reserve - est_system - est_dyn)
+        )
     messages: list[dict[str, Any]] = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
-    messages.append({"role": "user", "content": text})
+    messages.append({"role": "user", "content": f"{text}\n\n{dyn}" if dyn else text})
 
     # 工具（LLM 按需调用）：web_search（搜索可用时携带）+ 调用方附加工具（如 send_sticker）
     specs: list[dict[str, Any]] = []
@@ -313,6 +320,7 @@ async def chat(
     tool_handler: Callable[[str, dict[str, Any]], Awaitable[str]] | None = None,
     extra_system: str = "",
     system_prompt_override: str | None = None,
+    dynamic_blocks: str = "",
 ) -> Reply:
     """按 主选 → 回退链 依次尝试，返回第一个成功的结果；全失败则抛出最后一个异常。"""
     cfg = get_config()
@@ -333,6 +341,7 @@ async def chat(
                 tool_handler=tool_handler,
                 extra_system=extra_system,
                 system_prompt_override=system_prompt_override,
+                dynamic_blocks=dynamic_blocks,
             )
             return Reply(
                 provider=name,
