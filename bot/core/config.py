@@ -153,6 +153,7 @@ class Config:
     vision_model: str = "deepseek-v4-flash-vision-exp"
     vision_local_url: str = "http://127.0.0.1:8082/v1"
     vision_timeout: float = 60.0
+    sticker_enabled: bool = True
     providers: dict[str, Provider] = field(default_factory=dict)
 
 
@@ -212,6 +213,7 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         or "deepseek-v4-flash-vision-exp",
         vision_local_url=env.get("VISION_LOCAL_URL", "http://127.0.0.1:8082/v1").strip(),
         vision_timeout=float(env.get("VISION_TIMEOUT", "60")),
+        sticker_enabled=_is_on(env, "STICKER_ENABLED", "1"),
         providers=providers,
     )
 

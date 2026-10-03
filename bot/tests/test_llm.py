@@ -371,3 +371,58 @@ def test_chat_falls_back_until_success(monkeypatch):
     assert reply.provider == "opencode_go"
     assert reply.text == "备用成功"
     assert reply.reasoning == "想了想"
+
+
+def test_extra_tool_roundtrip(monkeypatch):
+    """附加工具（send_sticker 式）：模型调用 → tool_handler 执行 → 结果回填 → 出终答。"""
+    cfg = load_config({"OPENCODE_GO_API_KEY": "ok"})
+    monkeypatch.setattr(core_config, "_config", cfg, raising=False)
+    calls = []
+
+    async def handler(name, args):
+        calls.append((name, args))
+        return "已发送表情包（测试）"
+
+    requests: list[dict] = []
+
+    def h(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requests.append(body)
+        if len(requests) == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "finish_reason": "tool_calls",
+                            "message": {
+                                "content": "",
+                                "tool_calls": [
+                                    {
+                                        "id": "s1",
+                                        "type": "function",
+                                        "function": {"name": "send_sticker", "arguments": json.dumps({"query": "得意"})},
+                                    }
+                                ],
+                            },
+                        }
+                    ]
+                },
+            )
+        return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": "发了"}}]})
+
+    extra = [{"type": "function", "function": {"name": "send_sticker", "parameters": {"type": "object"}}}]
+    completion = asyncio.run(
+        llm.chat_once(
+            "来张图",
+            cfg.providers["opencode_go"],
+            transport=httpx.MockTransport(h),
+            extra_tools=extra,
+            tool_handler=handler,
+        )
+    )
+    assert completion.text == "发了"
+    assert calls == [("send_sticker", {"query": "得意"})]
+    assert requests[0]["tools"][0]["function"]["name"] == "send_sticker"
+    tool_msgs = [m for m in requests[1]["messages"] if m.get("role") == "tool"]
+    assert tool_msgs and tool_msgs[0]["content"] == "已发送表情包（测试）"

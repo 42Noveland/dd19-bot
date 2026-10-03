@@ -1,5 +1,6 @@
 """LLM 调用（local / opencode_go 双后端）+ 思考模式 + 失败回退 + 限频。"""
 from __future__ import annotations
+from collections.abc import Awaitable, Callable
 
 import json
 import re
@@ -182,8 +183,10 @@ async def chat_once(
     *,
     session_key: str | None = None,
     transport: httpx.AsyncBaseTransport | None = None,
+    extra_tools: list[dict[str, Any]] | None = None,
+    tool_handler: Callable[[str, dict[str, Any]], Awaitable[str]] | None = None,
 ) -> Completion:
-    """向单个后端发一次请求（含 web_search 工具循环）；空正文抛 EmptyReplyError。
+    """向单个后端发一次请求（含工具循环：web_search + 调用方附加工具）；空正文抛 EmptyReplyError。
 
     预算执行点：单次会话上限（LLM_MAX_TOKENS，输入估算+输出上限合计）与
     单日上限（core.budget 记账，含工具调用各轮）都在这里生效；
@@ -204,10 +207,13 @@ async def chat_once(
         messages.append({"role": "system", "content": system_prompt})
     messages.append({"role": "user", "content": text})
 
-    # web_search 工具（LLM 按需调用）：仅在搜索可用且该后端支持时携带
-    tools: list[dict[str, Any]] | None = None
+    # 工具（LLM 按需调用）：web_search（搜索可用时携带）+ 调用方附加工具（如 send_sticker）
+    specs: list[dict[str, Any]] = []
     if cfg.search_enabled and provider.supports_tools and cfg.search_api_key:
-        tools = [_search_tool_spec()]
+        specs.append(_search_tool_spec())
+    if extra_tools and provider.supports_tools:
+        specs.extend(extra_tools)
+    tools: list[dict[str, Any]] | None = specs or None
 
     url = provider.base_url.rstrip("/") + "/chat/completions"
     headers = _build_headers(provider, session_key)
@@ -254,18 +260,30 @@ async def chat_once(
                 )
                 # 关键：必须为每个 tool_call 回填一条 tool 消息；
                 # 模型一轮发起多个调用时漏回填任意一个，下一轮请求会因历史不合法被拒（400）
-                for idx, call in enumerate(tool_calls):
+                search_runs = 0
+                for call in tool_calls:
                     fn = call.get("function") or {}
-                    query = ""
+                    name = str(fn.get("name") or "")
+                    args: dict[str, Any] = {}
                     try:
-                        args = json.loads(fn.get("arguments") or "{}")
-                        query = str(args.get("query") or "").strip()
+                        parsed = json.loads(fn.get("arguments") or "{}")
+                        if isinstance(parsed, dict):
+                            args = parsed
                     except Exception:  # noqa: BLE001
                         pass
-                    if idx < 2:  # 每轮最多实际执行 2 个搜索；超出的也必须回填（跳过说明）
-                        result = await _run_search_tool(query, cfg)
+                    if name == "web_search":
+                        if search_runs >= 2:  # 每轮最多实际执行 2 个搜索；超出的也要回填
+                            result = "（本轮搜索次数已达上限，该搜索未执行；请基于已获得的结果回答）"
+                        else:
+                            search_runs += 1
+                            result = await _run_search_tool(str(args.get("query") or "").strip(), cfg)
+                    elif tool_handler is not None:
+                        try:
+                            result = await tool_handler(name, args)
+                        except Exception as exc:  # noqa: BLE001
+                            result = f"工具执行失败：{exc}"
                     else:
-                        result = "（本轮搜索次数已达上限，该搜索未执行；请基于已获得的结果回答）"
+                        result = f"（未知工具 {name}）"
                     messages.append({"role": "tool", "tool_call_id": call.get("id") or "", "content": result})
                 continue
             finish_reason = choice.get("finish_reason")
@@ -287,6 +305,8 @@ async def chat(
     *,
     chain: Sequence[str] | None = None,
     session_key: str | None = None,
+    extra_tools: list[dict[str, Any]] | None = None,
+    tool_handler: Callable[[str, dict[str, Any]], Awaitable[str]] | None = None,
 ) -> Reply:
     """按 主选 → 回退链 依次尝试，返回第一个成功的结果；全失败则抛出最后一个异常。"""
     cfg = get_config()
@@ -299,7 +319,13 @@ async def chat(
     last_exc: Exception | None = None
     for name in names:
         try:
-            completion = await chat_once(text, cfg.providers[name], session_key=session_key)
+            completion = await chat_once(
+                text,
+                cfg.providers[name],
+                session_key=session_key,
+                extra_tools=extra_tools,
+                tool_handler=tool_handler,
+            )
             return Reply(
                 provider=name,
                 text=completion.text,

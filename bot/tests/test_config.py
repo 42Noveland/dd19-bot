@@ -113,3 +113,8 @@ def test_context_and_vision_config_parse():
     assert cfg2.llm_context_messages == 0
     assert cfg2.vision_enabled is False
     assert cfg2.vision_model == "x-vision"
+
+
+def test_sticker_config_parse():
+    assert load_config({}).sticker_enabled is True
+    assert load_config({"STICKER_ENABLED": "0"}).sticker_enabled is False

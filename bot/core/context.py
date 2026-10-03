@@ -207,6 +207,28 @@ def image_upsert(md5: str, path: str, caption: str, model: str) -> None:
         conn.commit()
 
 
+# ---------------- 贴图库（表情包候选） ----------------
+
+def sticker_count() -> int:
+    """图库里可发送的图片数（有描述且路径非空）。"""
+    with _lock:
+        row = _db().execute(
+            "SELECT COUNT(*) AS n FROM images WHERE caption != '' AND path != ''"
+        ).fetchone()
+    return int(row["n"] or 0)
+
+
+def sticker_candidates(limit: int = 500) -> list[dict]:
+    """贴图库候选：有描述的图片（按人气/新鲜度排序）。"""
+    with _lock:
+        rows = _db().execute(
+            "SELECT * FROM images WHERE caption != '' AND path != '' "
+            "ORDER BY seen_count DESC, last_ts DESC LIMIT ?",
+            (int(limit),),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 # ---------------- prompt 组装 ----------------
 
 def format_context_prompt(history: list[dict], speaker: str, text: str) -> str:

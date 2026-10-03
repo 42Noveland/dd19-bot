@@ -5,15 +5,16 @@
 LLM_REPLY_MODE=command 时仅 /chat 指令触发。斜杠开头的消息一律不按聊天处理。
 """
 import time
+from pathlib import Path
 
 from nonebot import on_command, on_message
-from nonebot.adapters.onebot.v11 import Bot, Event, GroupMessageEvent, Message
+from nonebot.adapters.onebot.v11 import Bot, Event, GroupMessageEvent, Message, MessageSegment
 from nonebot.message import event_preprocessor
 from nonebot.params import CommandArg
 from nonebot.permission import SUPERUSER
 from nonebot.rule import Rule
 
-from core import budget, context, llm, search
+from core import budget, context, llm, search, stickers
 from core.config import get_config, normalize_provider_name
 from core.gate import is_allowed_group, render_message_text, should_reply_plain, strip_text_mention
 from plugins._shared import resolve_at_names, sender_name
@@ -81,7 +82,39 @@ def _format_reply(reply: llm.Reply) -> str:
     return out
 
 
-async def _reply_chat(matcher, event: GroupMessageEvent, text: str) -> None:
+def _make_sticker_handler(bot: Bot, event: GroupMessageEvent):
+    """send_sticker 工具的执行器：挑图→发送→记账→返回结果文本。每轮回复最多发 1 张。"""
+    sent = {"n": 0}
+
+    async def _handler(name: str, args: dict) -> str:
+        if name != "send_sticker":
+            return f"未知工具 {name}"
+        if sent["n"] >= 1:
+            return "本轮已经发过表情包了，先别刷图，用文字接着说"
+        query = str(args.get("query") or "").strip()
+        row = stickers.pick(query, event.group_id)
+        if row is None:
+            return "图库里没有合适的表情包，用文字回复吧"
+        try:
+            uri = Path(str(row["path"])).resolve().as_uri()
+            await bot.send(event, MessageSegment.image(uri))
+        except Exception as exc:  # noqa: BLE001
+            return f"表情包发送失败：{exc}"
+        sent["n"] += 1
+        stickers.note_sent(event.group_id, str(row["md5"]))
+        caption = str(row["caption"] or "")[:60]
+        try:
+            context.record_message(
+                event.group_id, int(event.self_id), get_config().bot_name, f"[表情包: {caption}]"
+            )
+        except Exception:  # noqa: BLE001 —— 记录失败不影响发送
+            pass
+        return f"已发送表情包（{caption}）"
+
+    return _handler
+
+
+async def _reply_chat(bot: Bot, matcher, event: GroupMessageEvent, text: str) -> None:
     """公共聊天流程：总开关 → 配额 → 限频 → 群上下文组装 → 主选+回退链 → 组装回复。"""
     cfg = get_config()
     if not cfg.llm_enabled:
@@ -99,8 +132,22 @@ async def _reply_chat(matcher, event: GroupMessageEvent, text: str) -> None:
             if str(row.get("message_id")) != str(event.message_id)
         ][-cfg.llm_context_messages :]
         prompt = context.format_context_prompt(history, sender_name(event), text)
+    extra_tools = None
+    tool_handler = None
+    if cfg.sticker_enabled:
+        try:
+            if context.sticker_count() > 0:
+                extra_tools = [stickers.tool_spec()]
+                tool_handler = _make_sticker_handler(bot, event)
+        except Exception:  # noqa: BLE001 —— 贴图库异常不影响聊天
+            extra_tools, tool_handler = None, None
     try:
-        reply = await llm.chat(prompt, session_key=f"qqbot-group-{event.group_id}")
+        reply = await llm.chat(
+            prompt,
+            session_key=f"qqbot-group-{event.group_id}",
+            extra_tools=extra_tools,
+            tool_handler=tool_handler,
+        )
     except llm.QuotaExceededError:
         await matcher.finish(cfg.llm_quota_reply)
         return
@@ -131,7 +178,7 @@ async def _handle_plain(bot: Bot, event: GroupMessageEvent) -> None:
         return
     names = await resolve_at_names(bot, event.group_id, message)
     text = render_message_text(message, str(bot.self_id), names)
-    await _reply_chat(chat_all, event, text)
+    await _reply_chat(bot, chat_all, event, text)
 
 
 @chat.handle()
@@ -141,7 +188,7 @@ async def _handle_chat(bot: Bot, event: GroupMessageEvent, args: Message = Comma
         await chat.finish("用法：/chat 你想说的话")
     names = await resolve_at_names(bot, event.group_id, args)
     text = render_message_text(args, str(bot.self_id), names)
-    await _reply_chat(chat, event, text)
+    await _reply_chat(bot, chat, event, text)
 
 
 def _build_search_prompt(query: str, results: list[search.SearchResult]) -> str:
