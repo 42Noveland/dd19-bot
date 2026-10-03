@@ -23,15 +23,26 @@ def reset() -> None:
     _last_sent.clear()
 
 
+def chat_hint() -> str:
+    """挂载 send_sticker 时注入的系统提示：自然配图引导 + 频率自控。"""
+    return (
+        "【表情包】你的图库里有从群里收集的表情包。回复群友时，如果配一张表情包能更好地表达情绪或接梗"
+        "（吐槽、无语、开心、安慰、得意、自嘲等），就调用 send_sticker 配一张——不用等对方要图；"
+        "query 要同时参考对方的话和你这条回复的基调。频率上克制一点：参考群聊记录里你最近发过的图，"
+        "大约每 3~5 次回复最多配 1 张，别连着发。对方明确要图或要重发时必须配。"
+    )
+
+
 def tool_spec() -> dict:
     return {
         "type": "function",
         "function": {
             "name": "send_sticker",
             "description": (
-                "从图库里挑一张表情包/图片发到群里（斗图、接梗、表达情绪）。"
-                "当你觉得发张图比说话更合适时调用；query 用简短词语描述想表达的意思，"
-                "如：无语、笑死、点赞、委屈、猫猫困惑、得意。"
+                "给回复配一张表情包/图片发到群里（斗图、接梗、表达情绪、自嘲）。"
+                "回复群友时不必等对方要图，觉得配一张更带感就调用；"
+                "query 用简短词语描述想表达的情绪或梗（同时参考对方的话和你这条回复的基调），"
+                "如：无语、笑死、点赞、委屈、懵了、得意。"
                 "用户明确要求重发刚才那张时，把 repeat 设为 true。"
             ),
             "parameters": {
@@ -54,6 +65,28 @@ def _keywords(text: str) -> set[str]:
     for word in re.findall(r"[A-Za-z0-9]+", text):
         grams.add(word.lower())
     return grams
+
+
+_MOOD_GROUPS: tuple[tuple[str, ...], ...] = (
+    ("开心", "高兴", "哈哈", "笑死", "大笑", "乐呵", "美滋滋"),
+    ("无语", "汗颜", "裂开", "麻了", "服了", "沉默"),
+    ("委屈", "哭了", "流泪", "难过", "伤心", "呜呜"),
+    ("生气", "气死", "火大", "恼火", "暴怒"),
+    ("震惊", "懵", "惊了", "呆住", "傻眼"),
+    ("得意", "拽", "骄傲", "傲娇", "嘿嘿"),
+    ("喜欢", "心动", "比心", "爱心", "亲亲"),
+    ("安慰", "抱抱", "摸摸", "拍拍"),
+    ("加油", "冲鸭", "努力"),
+)
+
+
+def _expand_moods(q: set[str], text: str) -> set[str]:
+    """同义情绪词扩展：query 命中某组任一词，并入该组全部词的关键词（提升小图库命中率）。"""
+    for group in _MOOD_GROUPS:
+        if any(word in text for word in group):
+            for word in group:
+                q |= _keywords(word)
+    return q
 
 
 def _recent_md5s(group_id: int) -> set[str]:
@@ -82,7 +115,7 @@ def pick(query: str, group_id: int, repeat: bool = False) -> dict | None:
     pool = candidates if repeat else [c for c in candidates if c["md5"] not in recent]
     if not pool:
         pool = candidates  # 小图库全被防重排除：宁发勿尬
-    q = _keywords(query)
+    q = _expand_moods(_keywords(query), query)
     scored: list[tuple[int, float, float, dict]] = []
     for row in pool:
         caption = str(row.get("caption") or "")

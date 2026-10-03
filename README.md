@@ -38,10 +38,11 @@ D:\agent-workspace\qqbot\
 | 项目 | 命令/位置 | 期望 |
 |---|---|---|
 | 端口存活 | 浏览器开 http://127.0.0.1:8081/ | 返回 404 = 正常 |
-| 单元测试 | `cd bot && .venv\Scripts\python.exe -m pytest -q tests` | `65 passed` |
+| 单元测试 | `cd bot && .venv\Scripts\python.exe -m pytest -q tests` | `68 passed` |
 | 感知层探针 | bot 运行时 `.venv\Scripts\python.exe tests\e2e\probe_context_vision.py [图片URL]` | 记忆/图片均 ✓ |
 | @ 解析探针 | `.venv\Scripts\python.exe tests\e2e\probe_mention_parse.py` | 4 种 @ 形态正常 |
 | 表情包探针 | `.venv\Scripts\python.exe tests\e2e\probe_sticker.py` | 收到图片发送 |
+| 自然配图探针 | `.venv\Scripts\python.exe tests\e2e\probe_sticker_natural.py [消息]` | 情绪语境下模型主动配图（统计性） |
 | 全链路自测 | bot 运行时 `bot\.venv\Scripts\python.exe bot\tests\e2e\fake_napcat.py` | `ALL PASS` |
 | NapCat 面板 | http://127.0.0.1:6099/webui（token 见 `napcat\NapCat.Shell.Node\napcat\config\webui.json`） | 仅本机可访问 |
 - NapCat HTTP API：127.0.0.1:3000（仅本机，调试/运维用；get_image、send_group_msg 等）
@@ -83,8 +84,9 @@ D:\agent-workspace\qqbot\
 - **图片识别（感知层）**：群里的图片即收即下——优先从 NapCat 本地缓存取图（QQ CDN 链接短时效，不可依赖）、md5 去重后走 opencode-go 云 vision
   生成描述（本地 MiniCPM-V 兜底），描述写回上下文——重复的图零成本；识别结果同时是贴图库的底账。
   `VISION_ENABLED=0` 可关闭。
-- **表情包回应（表达层）**：聊天中 LLM 可按需调用 `send_sticker` 从图库挑一张表情包发出
-  （斗图/接梗/表达情绪）；图库自动从群里出现过的图片积累（md5 去重），同群 10 分钟内不重复发同一张。
+- **表情包回应（表达层）**：LLM 回复时会**自然配图**——觉得配一张更带感（吐槽/接梗/情绪/安慰）就主动调用
+  `send_sticker` 从图库挑一张发出，不用等对方要图（系统提示引导 + 同义情绪词扩展 + 频率自控：约 3~5 条回复最多 1 张）；
+  明确要图/要重发时必配。图库自动从群里出现过的图片积累（md5 去重），同群 10 分钟内不重复发同一张。
   `STICKER_ENABLED=0` 可关闭。
 - **限频**：同一人同一群 5 秒内只能触发一次聊天/搜索。
 - **回退链**：主选失败自动尝试下一个后端，回复末尾可用 `LLM_SHOW_PROVIDER=1` 显示 `[via xxx]`。
@@ -148,8 +150,10 @@ D:\agent-workspace\qqbot\
   图片识别全链路（下载→去重→云 vision→回填：测试图读出"苹果数量=42"；真实群表情包识别+回填）✔；
   句中 @ 昵称渲染、回复自身记录入上下文 ✔；单测 56 passed。
 - **表达层·表情包回应（2026-10-03）**：send_sticker 工具上线（LLM 按需调用→图库语义匹配→发图→记账）；
-  实测探针："来张'得意'的表情包" → 发出群里收集的女仆图 + "发了，够得意了吧哈哈" ✔；单测 65 passed。
+  实测探针："来张'得意'的表情包" → 发出群里收集的女仆图 + "发了，够得意了吧哈哈" ✔；单测 68 passed。
 - **图片管道加固（2026-10-03）**：取图改为 **NapCat 本地缓存优先**（`get_image` API），修掉 CDN 链接过期导致的静默失败；
   补识别 2 张历史图（含 1.3MB 动图）；真机发图实测通过（`file:///` 路径，retcode 0）。
+- **自然配图（2026-10-03）**：回复时按对话情绪主动配图（系统提示 + 同义扩展 + 频率自控）；
+  实测"今天也太无语了…裂开了" → 主动发出"被生活拿捏"虎斑猫图 + "先给你配个图…" ✔；单测 68 passed。
 - 未做/待办：本机 llama（local 后端）实机测试（需先启动 start-qwen38.cmd 后 `/model test local`）；
   手机访问 6099 的负测试（WebUI 已限 127.0.0.1）；48 小时风控观察。

@@ -135,19 +135,22 @@ async def _reply_chat(bot: Bot, matcher, event: GroupMessageEvent, text: str) ->
         prompt = context.format_context_prompt(history, sender_name(event), text)
     extra_tools = None
     tool_handler = None
+    extra_system = ""
     if cfg.sticker_enabled:
         try:
             if context.sticker_count() > 0:
                 extra_tools = [stickers.tool_spec()]
                 tool_handler = _make_sticker_handler(bot, event)
+                extra_system = stickers.chat_hint()
         except Exception:  # noqa: BLE001 —— 贴图库异常不影响聊天
-            extra_tools, tool_handler = None, None
+            extra_tools, tool_handler, extra_system = None, None, ""
     try:
         reply = await llm.chat(
             prompt,
             session_key=f"qqbot-group-{event.group_id}",
             extra_tools=extra_tools,
             tool_handler=tool_handler,
+            extra_system=extra_system,
         )
     except llm.QuotaExceededError:
         await matcher.finish(cfg.llm_quota_reply)

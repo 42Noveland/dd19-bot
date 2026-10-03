@@ -68,3 +68,17 @@ def test_tool_spec_shape():
     assert spec["function"]["name"] == "send_sticker"
     assert "query" in spec["function"]["parameters"]["properties"]
     assert "repeat" in spec["function"]["parameters"]["properties"]
+
+
+def test_pick_mood_synonym(tmp_path):
+    """同义情绪词扩展：query "开心" 应能命中含 "高兴" 的图。"""
+    context.reset(tmp_path / "ctx.db")
+    stickers.reset()
+    _mk(tmp_path, "a.jpg", "一只猫高兴得直蹦")
+    row = stickers.pick("今天真开心", 1)
+    assert row is not None and row["md5"] == "a.jpg"
+
+
+def test_chat_hint_mentions_cadence():
+    hint = stickers.chat_hint()
+    assert "send_sticker" in hint and "不用等" in hint

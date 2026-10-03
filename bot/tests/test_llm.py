@@ -426,3 +426,26 @@ def test_extra_tool_roundtrip(monkeypatch):
     assert requests[0]["tools"][0]["function"]["name"] == "send_sticker"
     tool_msgs = [m for m in requests[1]["messages"] if m.get("role") == "tool"]
     assert tool_msgs and tool_msgs[0]["content"] == "已发送表情包（测试）"
+
+
+def test_extra_system_appended(monkeypatch):
+    """extra_system 应追加进 system 消息（自然配图提示靠它注入）。"""
+    cfg = load_config({"OPENCODE_GO_API_KEY": "ok"})
+    monkeypatch.setattr(core_config, "_config", cfg, raising=False)
+    requests: list[dict] = []
+
+    def h(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": "好"}}]})
+
+    asyncio.run(
+        llm.chat_once(
+            "在吗",
+            cfg.providers["opencode_go"],
+            transport=httpx.MockTransport(h),
+            extra_system="【测试提示】配图引导",
+        )
+    )
+    sys_msg = requests[0]["messages"][0]
+    assert sys_msg["role"] == "system"
+    assert "【测试提示】配图引导" in sys_msg["content"]

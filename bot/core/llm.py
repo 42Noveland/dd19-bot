@@ -185,6 +185,7 @@ async def chat_once(
     transport: httpx.AsyncBaseTransport | None = None,
     extra_tools: list[dict[str, Any]] | None = None,
     tool_handler: Callable[[str, dict[str, Any]], Awaitable[str]] | None = None,
+    extra_system: str = "",
 ) -> Completion:
     """向单个后端发一次请求（含工具循环：web_search + 调用方附加工具）；空正文抛 EmptyReplyError。
 
@@ -197,6 +198,8 @@ async def chat_once(
         raise QuotaExceededError("今日 token 额度已用完")
 
     system_prompt = cfg.llm_system_prompt
+    if extra_system:
+        system_prompt = f"{system_prompt}\n\n{extra_system}" if system_prompt else extra_system
     # 单次会话上限：先保证输入（人设+消息）不超上限，再把剩余额度作为输出上限
     reserve = 256
     est_system = budget.estimate_tokens(system_prompt)
@@ -307,6 +310,7 @@ async def chat(
     session_key: str | None = None,
     extra_tools: list[dict[str, Any]] | None = None,
     tool_handler: Callable[[str, dict[str, Any]], Awaitable[str]] | None = None,
+    extra_system: str = "",
 ) -> Reply:
     """按 主选 → 回退链 依次尝试，返回第一个成功的结果；全失败则抛出最后一个异常。"""
     cfg = get_config()
@@ -325,6 +329,7 @@ async def chat(
                 session_key=session_key,
                 extra_tools=extra_tools,
                 tool_handler=tool_handler,
+                extra_system=extra_system,
             )
             return Reply(
                 provider=name,
