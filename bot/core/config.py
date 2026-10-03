@@ -158,6 +158,9 @@ class Config:
     auto_reply_enabled: bool = True
     auto_reply_chance: float = 0.35
     auto_reply_cooldown: int = 240
+    memory_enabled: bool = True
+    memory_batch: int = 30
+    memory_tick: int = 120
     providers: dict[str, Provider] = field(default_factory=dict)
 
 
@@ -222,6 +225,9 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         auto_reply_enabled=_is_on(env, "AUTO_REPLY_ENABLED", "1"),
         auto_reply_chance=float(env.get("AUTO_REPLY_CHANCE", "0.35")),
         auto_reply_cooldown=int(float(env.get("AUTO_REPLY_COOLDOWN", "240"))),
+        memory_enabled=_is_on(env, "MEMORY_ENABLED", "1"),
+        memory_batch=int(float(env.get("MEMORY_BATCH", "30"))),
+        memory_tick=int(float(env.get("MEMORY_TICK", "120"))),
         providers=providers,
     )
 

@@ -116,6 +116,17 @@ def _is_chat_reply(action: dict) -> bool:
     return action.get("action") in REPLY_ACTIONS
 
 
+def _quotes(action: dict, message_id: int) -> bool:
+    """该回复是否带 reply 段、且引用指定 message_id（聊天回复都带引用）。"""
+    msg = (action.get("params") or {}).get("message")
+    if not isinstance(msg, list):
+        return False
+    for seg in msg:
+        if isinstance(seg, dict) and seg.get("type") == "reply":
+            return str((seg.get("data") or {}).get("id")) == str(message_id)
+    return False
+
+
 async def main() -> int:
     env = _load_env()
     port = int(env.get("PORT", "8081"))
@@ -184,7 +195,7 @@ async def main() -> int:
 
         if mode in ("mention", "all"):
             await ws.send(json.dumps(_event(allowed_group, at_segs, 2005)))
-            action = await _wait_for(ws, _is_chat_reply, wait_llm)
+            action = await _wait_for(ws, lambda d: _is_chat_reply(d) and _quotes(d, 2005), wait_llm)
             assert action, f"{mode} 模式：@机器人后应有 LLM 回复（等待 {wait_llm:.0f}s 超时）"
             text = _params_text(action)
             assert "说得太快啦" not in text, "触发了限频（前端发送过快），请重跑脚本"
@@ -211,7 +222,7 @@ async def main() -> int:
                     _event(allowed_group, [_text_seg(f"@{SELF_ID} 请只回复两个字：收到")], 2008, user_id=20003)
                 )
             )
-            action = await _wait_for(ws, _is_chat_reply, wait_llm)
+            action = await _wait_for(ws, lambda d: _is_chat_reply(d) and _quotes(d, 2008), wait_llm)
             assert action, "文本@ 聊天未收到回复（兼容层未生效）"
             text = _params_text(action)
             assert "说得太快啦" not in text, "触发了限频，请重跑脚本"
@@ -221,7 +232,9 @@ async def main() -> int:
         search_on = env.get("SEARCH_ENABLED", "1").strip().lower() in ("1", "true", "yes", "on")
         if search_on:
             await ws.send(json.dumps(_event(allowed_group, [_text_seg("/search 北京今天天气")], 2009, user_id=20004)))
-            action = await _wait_for(ws, _is_chat_reply, wait_llm)
+            action = await _wait_for(
+                ws, lambda d: _is_chat_reply(d) and ("参考链接" in _params_text(d) or "http" in _params_text(d)), wait_llm
+            )
             assert action, "/search 未收到回复"
             text = _params_text(action)
             assert "搜索失败" not in text, f"/search 失败: {text[:200]}"
@@ -234,7 +247,7 @@ async def main() -> int:
                     _text_seg(" 帮我搜一下北京今天的天气，然后告诉我"),
                 ]
                 await ws.send(json.dumps(_event(allowed_group, tool_segs, 2010, user_id=20005)))
-                action = await _wait_for(ws, _is_chat_reply, wait_llm * 1.5)
+                action = await _wait_for(ws, lambda d: _is_chat_reply(d) and _quotes(d, 2010), wait_llm * 1.5)
                 assert action, "LLM 按需搜索（工具调用）未收到回复"
                 text = _params_text(action)
                 assert "白饭吃完了" not in text, "意外触发配额提示"

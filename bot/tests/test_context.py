@@ -57,3 +57,12 @@ def test_format_context_prompt_not_addressed():
     assert "对你说" not in out and "小明" in out and "今天吃啥" in out
     out2 = context.format_context_prompt([{"name": "A", "text": "hi"}], "小明", "今天吃啥", addressed=False)
     assert "对你说" not in out2 and "没有人 @ 你" in out2
+
+
+def test_format_context_prompt_memories():
+    out = context.format_context_prompt([], "小明", "hi", memories="【你记得的事】\n关于 小明：喜欢蓝色")
+    assert "喜欢蓝色" in out and "对你说" in out
+    out2 = context.format_context_prompt(
+        [{"name": "A", "text": "x"}], "小明", "hi", memories="【你记得的事】"
+    )
+    assert "【你记得的事】" in out2 and "【群聊背景" in out2

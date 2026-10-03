@@ -67,6 +67,22 @@ def _db() -> sqlite3.Connection:
                 first_ts REAL NOT NULL,
                 last_ts REAL NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS memories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL DEFAULT 0,
+                name TEXT NOT NULL DEFAULT '',
+                kind TEXT NOT NULL DEFAULT 'user',
+                text TEXT NOT NULL,
+                created_ts REAL NOT NULL,
+                updated_ts REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_memories_group_user ON memories(group_id, user_id);
+            CREATE TABLE IF NOT EXISTS mem_watermark (
+                group_id INTEGER PRIMARY KEY,
+                last_row_id INTEGER NOT NULL DEFAULT 0,
+                updated_ts REAL NOT NULL
+            );
             """
         )
         conn.commit()
@@ -231,14 +247,21 @@ def sticker_candidates(limit: int = 500) -> list[dict]:
 
 # ---------------- prompt 组装 ----------------
 
-def format_context_prompt(history: list[dict], speaker: str, text: str, addressed: bool = True) -> str:
+def format_context_prompt(
+    history: list[dict],
+    speaker: str,
+    text: str,
+    addressed: bool = True,
+    memories: str = "",
+) -> str:
     """把群聊历史 + 当前消息组装成给 LLM 的最终 prompt（纯函数，可单测）。
 
     addressed=False：消息并非直接对机器人说（决策层主动接话场景），措辞不同。
+    memories：记忆系统注入块（可空），插在群聊背景之后。
     """
     tail = f"{speaker} 对你说：{text}" if addressed else f"群里 {speaker} 说：{text}"
     if not history:
-        return tail
+        return f"{memories}\n\n{tail}" if memories else tail
     lines: list[str] = []
     for row in history:
         name = str(row.get("name") or row.get("user_id") or "?")
@@ -246,10 +269,12 @@ def format_context_prompt(history: list[dict], speaker: str, text: str, addresse
         if content:
             lines.append(f"{name}: {content}")
     if not lines:
-        return tail
+        return f"{memories}\n\n{tail}" if memories else tail
     now = f"【现在，{speaker} 对你说】" if addressed else f"【现在，群里 {speaker} 说（没有人 @ 你）】"
+    mid = f"\n\n{memories}" if memories else ""
     return (
         "【群聊背景（最近几条消息，供你了解上下文，不用逐条回应）】\n"
         + "\n".join(lines)
+        + mid
         + f"\n\n{now}\n{text}"
     )

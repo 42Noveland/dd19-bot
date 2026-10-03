@@ -14,7 +14,7 @@ from nonebot.params import CommandArg
 from nonebot.permission import SUPERUSER
 from nonebot.rule import Rule
 
-from core import budget, context, llm, search, stickers
+from core import budget, context, llm, memory, search, stickers
 from core.config import get_config, normalize_provider_name
 from core.gate import is_allowed_group, render_message_text, should_reply_plain, strip_text_mention
 from plugins._shared import resolve_at_names, sender_name
@@ -152,6 +152,12 @@ async def chat_flow(
     if not quiet_skip and not llm.allow(event.group_id, event.user_id):
         await _send_reply(send, event, "说得太快啦，稍等几秒再聊")
         return
+    mem_block = ""
+    if cfg.memory_enabled:
+        try:
+            mem_block = memory.for_prompt(event.group_id, event.user_id)
+        except Exception:  # noqa: BLE001 —— 记忆异常不影响聊天
+            mem_block = ""
     prompt = text
     if cfg.llm_context_messages > 0:
         # 群上下文：取触发消息之前最近几条（触发消息此刻已在库，需剔除）
@@ -160,7 +166,11 @@ async def chat_flow(
             for row in context.recent_messages(event.group_id, limit=cfg.llm_context_messages + 1)
             if str(row.get("message_id")) != str(event.message_id)
         ][-cfg.llm_context_messages :]
-        prompt = context.format_context_prompt(history, sender_name(event), text, addressed=addressed)
+        prompt = context.format_context_prompt(
+            history, sender_name(event), text, addressed=addressed, memories=mem_block
+        )
+    elif mem_block:
+        prompt = f"{mem_block}\n\n{text}"
     extra_tools = None
     tool_handler = None
     extra_system = extra_note
