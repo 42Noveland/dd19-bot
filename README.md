@@ -1,7 +1,7 @@
 # 朋友群 QQ 机器人（NapCat Node 版 + NoneBot2）
 
 小号 **123456789**（群昵称 dd19；人设名 **十九**，普通朋友风格）在本机 Windows 常驻，
-接入三个白名单群；LLM 支持三后端（本机 llama.cpp / DeepSeek 官方 / opencode-go 中转）。
+接入三个白名单群；LLM 支持双后端（opencode-go 中转 / 本机 llama.cpp）。
 
 - 测试群：111111111 ｜ 朋友群：222222222 ｜ 新群：333333333
 - 管理员（/model 指令）：1234567890
@@ -48,7 +48,7 @@ D:\agent-workspace\qqbot\
 | SUPERUSERS | ["1234567890"] | /model 管理员 |
 | LLM_ENABLED | 1 | 聊天总开关 |
 | LLM_PROVIDER | opencode_go | 主选后端（deepseek-v4.1-flash） |
-| LLM_FALLBACKS | deepseek,opencode_go | 回退链（实际生效：deepseek；不想耗额度可清空） |
+| LLM_FALLBACKS | （空） | 回退链；留空=只用主选。可填 local 让本机模型兜底 |
 | LLM_REPLY_MODE | mention | 默认：@我/引用回复才聊；all=所有消息都聊；command=仅 /chat |
 | LLM_PERSONA_FILE | persona.md | 人设文件；也可用 LLM_SYSTEM_PROMPT 单行直写（优先级更高） |
 | LLM_MAX_TOKENS | 100000 | 单次会话 token 上限（输入估算+输出上限合计；超长输入自动截断） |
@@ -56,10 +56,10 @@ D:\agent-workspace\qqbot\
 | LLM_QUOTA_REPLY | 白饭吃完了QAQ | 额度用完后的固定回复 |
 | LLM_TOOL_MAX_ROUNDS | 3 | web_search 工具调用的最大轮次 |
 | SEARCH_ENABLED / SEARCH_API_KEY | 1 / Firecrawl | 联网搜索（LLM 按需调用 web_search；/search 手动触发） |
-| LLM_*_TOOLS | opencode_go=on, deepseek=on, local=off | 各后端是否启用 function calling |
+| LLM_*_TOOLS | opencode_go=on, local=off | 各后端是否启用 function calling |
 | LLM_TIMEOUT | 180 | 单次请求超时（秒） |
 | LLM_COOLDOWN | 5 | 每人每群限频（秒） |
-| LLM_DEEPSEEK_* / LLM_OPENCODE_GO_* | 思考=on，档位 medium | 两个 API 后端的思考参数 |
+| LLM_OPENCODE_GO_* | 思考=on，档位 medium | API 后端的思考参数 |
 
 ## 行为说明
 
@@ -88,8 +88,7 @@ D:\agent-workspace\qqbot\
 ## 风险提示
 
 - 第三方协议端（NapCat）存在 QQ 账号风控风险：仅用小号、低频、白名单运行；不对外暴露端口。
-- API 后端消耗：opencode_go 为订阅额度（三窗口限额）、deepseek 按量计费；
-  回退链会静默消耗额度——不想花钱把 `LLM_FALLBACKS` 清空。
+- API 后端消耗：opencode_go 为订阅额度（三窗口限额）；回退链当前为空（可用 local 兜底）。
 - 人设与聊天内容：API 后端会把内容发给对应服务方；本机模型不外发。
 
 ## 备份
@@ -124,5 +123,7 @@ D:\agent-workspace\qqbot\
     `/search 北京今天天气` → 自然口语总结 + 参考链接 ✔
   - **Token 预算**：单次会话上限 10w、单日上限 1kw 生效；记账持久化于
     `bot/logs/token-usage.json`（重启不丢、按北京时间跨天重置）；超限固定回复「白饭吃完了QAQ」✔
+- **工具调用修复（2026-10-03）**：一轮内多个 tool_call 逐个回填 + 末轮强制收尾（逼出最终回答），
+  修复"多搜索请求 400 / 轮次超限"；DeepSeek 后端移除（链=opencode_go；local 保留可切换）✔
 - 未做/待办：本机 llama（local 后端）实机测试（需先启动 start-qwen38.cmd 后 `/model test local`）；
   手机访问 6099 的负测试（WebUI 已限 127.0.0.1）；48 小时风控观察。

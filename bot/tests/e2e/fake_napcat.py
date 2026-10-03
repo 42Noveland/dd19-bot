@@ -250,15 +250,15 @@ async def main() -> int:
             assert action, "/model 列表未收到回复"
             print("[OK] /model 列表 ->", _params_text(action)[:120])
 
-            await ws.send(json.dumps(_event(allowed_group, [_text_seg("/model deepseek")], 2102, user_id=admin)))
+            await ws.send(json.dumps(_event(allowed_group, [_text_seg("/model local")], 2102, user_id=admin)))
             action = await _wait_for(ws, lambda d: _is_chat_reply(d) and "已切换" in _params_text(d), 8)
             assert action, "/model 切换未收到回复"
-            print("[OK] /model deepseek ->", _params_text(action)[:120])
+            print("[OK] /model local ->", _params_text(action)[:120])
 
-            await ws.send(json.dumps(_event(allowed_group, [_text_seg("/model local")], 2103, user_id=admin)))
+            await ws.send(json.dumps(_event(allowed_group, [_text_seg("/model opencode_go")], 2103, user_id=admin)))
             action = await _wait_for(ws, lambda d: _is_chat_reply(d) and "已切换" in _params_text(d), 8)
             assert action, "/model 还原未收到回复"
-            print("[OK] /model local ->", _params_text(action)[:120])
+            print("[OK] /model opencode_go ->", _params_text(action)[:120])
         else:
             print("[SKIP] 未配置 SUPERUSERS，跳过 /model 场景")
 

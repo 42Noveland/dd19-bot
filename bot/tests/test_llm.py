@@ -42,21 +42,6 @@ def _capture_transport(captured: dict, message: dict, finish_reason: str = "stop
     return httpx.MockTransport(handler)
 
 
-def test_deepseek_request_sends_thinking_payload():
-    captured = {}
-    provider = load_config({"DEEPSEEK_API_KEY": "dk-test"}).providers["deepseek"]
-    completion = asyncio.run(
-        llm.chat_once("hi", provider, transport=_capture_transport(captured, {"content": " 你好呀 "}))
-    )
-    assert completion.text == "你好呀"
-    assert captured["url"].endswith("/chat/completions")
-    assert captured["headers"]["authorization"] == "Bearer dk-test"
-    assert captured["body"]["model"] == "deepseek-flash"
-    assert captured["body"]["messages"][0]["content"] == "hi"
-    assert captured["body"]["thinking"] == {"type": "enabled"}       # 思考默认开
-    assert captured["body"]["reasoning_effort"] == "high"            # 默认档位
-
-
 def test_completion_extracts_reasoning_field():
     captured = {}
     provider = load_config({}).providers["local"]
@@ -138,12 +123,12 @@ def test_opencode_request_sends_effort_and_session():
 
 def test_system_prompt_injected_when_configured(monkeypatch):
     captured = {}
-    cfg = load_config({"DEEPSEEK_API_KEY": "dk", "LLM_SYSTEM_PROMPT": "你是猫娘\\n回答简短"})
+    cfg = load_config({"OPENCODE_GO_API_KEY": "ok", "LLM_SYSTEM_PROMPT": "你是测试人设\\n回答简短"})
     monkeypatch.setattr(core_config, "_config", cfg, raising=False)
-    provider = cfg.providers["deepseek"]
-    asyncio.run(llm.chat_once("hi", provider, transport=_capture_transport(captured, {"content": "喵"})))
+    provider = cfg.providers["opencode_go"]
+    asyncio.run(llm.chat_once("hi", provider, transport=_capture_transport(captured, {"content": "好"})))
     messages = captured["body"]["messages"]
-    assert messages[0] == {"role": "system", "content": "你是猫娘\n回答简短"}
+    assert messages[0] == {"role": "system", "content": "你是测试人设\n回答简短"}
     assert messages[1] == {"role": "user", "content": "hi"}
 
 
@@ -158,13 +143,13 @@ def test_usage_recorded(monkeypatch):
     calls = []
     monkeypatch.setattr(core_budget, "record", lambda name, tokens, **k: calls.append((name, tokens)))
     captured = {}
-    provider = load_config({"DEEPSEEK_API_KEY": "dk"}).providers["deepseek"]
+    provider = load_config({"OPENCODE_GO_API_KEY": "ok"}).providers["opencode_go"]
     asyncio.run(
         llm.chat_once(
-            "hi", provider, transport=_capture_transport(captured, {"content": "喵"}, usage={"total_tokens": 123})
+            "hi", provider, transport=_capture_transport(captured, {"content": "好"}, usage={"total_tokens": 123})
         )
     )
-    assert calls == [("deepseek", 123)]
+    assert calls == [("opencode_go", 123)]
 
 
 def test_quota_exceeded_raises_and_chain_not_fallback(monkeypatch):
@@ -173,15 +158,15 @@ def test_quota_exceeded_raises_and_chain_not_fallback(monkeypatch):
     with pytest.raises(llm.QuotaExceededError):
         asyncio.run(llm.chat_once("hi", provider, transport=_capture_transport({}, {"content": "x"})))
     with pytest.raises(llm.QuotaExceededError):
-        asyncio.run(llm.chat("hi", chain=["local", "deepseek"]))
+        asyncio.run(llm.chat("hi", chain=["local", "opencode_go"]))
 
 
 def test_max_tokens_respects_call_limit(monkeypatch):
     captured = {}
-    cfg = load_config({"DEEPSEEK_API_KEY": "dk", "LLM_MAX_TOKENS": "100000"})
+    cfg = load_config({"OPENCODE_GO_API_KEY": "ok", "LLM_MAX_TOKENS": "100000"})
     monkeypatch.setattr(core_config, "_config", cfg, raising=False)
     asyncio.run(
-        llm.chat_once("hi", cfg.providers["deepseek"], transport=_capture_transport(captured, {"content": "ok"}))
+        llm.chat_once("hi", cfg.providers["opencode_go"], transport=_capture_transport(captured, {"content": "ok"}))
     )
     expected = max(64, 100000 - core_budget.estimate_tokens("hi"))
     assert captured["body"]["max_tokens"] == expected
@@ -189,10 +174,10 @@ def test_max_tokens_respects_call_limit(monkeypatch):
 
 def test_input_truncated_to_call_limit(monkeypatch):
     captured = {}
-    cfg = load_config({"DEEPSEEK_API_KEY": "dk", "LLM_MAX_TOKENS": "1000"})
+    cfg = load_config({"OPENCODE_GO_API_KEY": "ok", "LLM_MAX_TOKENS": "1000"})
     monkeypatch.setattr(core_config, "_config", cfg, raising=False)
     asyncio.run(
-        llm.chat_once("啊" * 5000, cfg.providers["deepseek"], transport=_capture_transport(captured, {"content": "ok"}))
+        llm.chat_once("啊" * 5000, cfg.providers["opencode_go"], transport=_capture_transport(captured, {"content": "ok"}))
     )
     sent = captured["body"]["messages"][-1]["content"]
     assert "内容过长已截断" in sent
@@ -201,20 +186,20 @@ def test_input_truncated_to_call_limit(monkeypatch):
 
 def test_tools_payload_when_enabled(monkeypatch):
     captured = {}
-    cfg = load_config({"DEEPSEEK_API_KEY": "dk", "SEARCH_API_KEY": "fk"})
+    cfg = load_config({"OPENCODE_GO_API_KEY": "ok", "SEARCH_API_KEY": "fk"})
     monkeypatch.setattr(core_config, "_config", cfg, raising=False)
     asyncio.run(
-        llm.chat_once("hi", cfg.providers["deepseek"], transport=_capture_transport(captured, {"content": "ok"}))
+        llm.chat_once("hi", cfg.providers["opencode_go"], transport=_capture_transport(captured, {"content": "ok"}))
     )
     assert captured["body"]["tools"][0]["function"]["name"] == "web_search"
 
 
 def test_tools_absent_without_search_key(monkeypatch):
     captured = {}
-    cfg = load_config({"DEEPSEEK_API_KEY": "dk"})
+    cfg = load_config({"OPENCODE_GO_API_KEY": "ok"})
     monkeypatch.setattr(core_config, "_config", cfg, raising=False)
     asyncio.run(
-        llm.chat_once("hi", cfg.providers["deepseek"], transport=_capture_transport(captured, {"content": "ok"}))
+        llm.chat_once("hi", cfg.providers["opencode_go"], transport=_capture_transport(captured, {"content": "ok"}))
     )
     assert "tools" not in captured["body"]
 
@@ -237,7 +222,7 @@ def test_tool_loop_executes_search_and_returns_final(monkeypatch):
         return [core_search.SearchResult(title="天气页", url="http://x", snippet="晴 15-24℃")]
 
     monkeypatch.setattr(core_search, "web_search", fake_search)
-    cfg = load_config({"DEEPSEEK_API_KEY": "dk", "SEARCH_API_KEY": "fk"})
+    cfg = load_config({"OPENCODE_GO_API_KEY": "ok", "SEARCH_API_KEY": "fk"})
     monkeypatch.setattr(core_config, "_config", cfg, raising=False)
     requests: list[dict] = []
 
@@ -268,13 +253,13 @@ def test_tool_loop_executes_search_and_returns_final(monkeypatch):
             )
         return httpx.Response(
             200,
-            json={"choices": [{"finish_reason": "stop", "message": {"content": "晴，15-24℃喵"}}], "usage": {"total_tokens": 20}},
+            json={"choices": [{"finish_reason": "stop", "message": {"content": "晴，15-24℃"}}], "usage": {"total_tokens": 20}},
         )
 
     completion = asyncio.run(
-        llm.chat_once("北京今天天气", cfg.providers["deepseek"], transport=httpx.MockTransport(handler))
+        llm.chat_once("北京今天天气", cfg.providers["opencode_go"], transport=httpx.MockTransport(handler))
     )
-    assert completion.text == "晴，15-24℃喵"
+    assert completion.text == "晴，15-24℃"
     assert completion.total_tokens == 50
     assert searched["query"] == "北京天气"
     second_messages = requests[1]["messages"]
@@ -282,8 +267,78 @@ def test_tool_loop_executes_search_and_returns_final(monkeypatch):
     assert any(m.get("role") == "assistant" and m.get("tool_calls") for m in second_messages)
 
 
+def test_tool_loop_responds_to_every_tool_call(monkeypatch):
+    """一轮内多个 tool_call：每个都必须回填 tool 消息（否则下一轮请求 400）。"""
+    queries: list[str] = []
+
+    async def fake_search(query, **kwargs):
+        queries.append(query)
+        return [core_search.SearchResult(title="T", url="http://x", snippet=f"结果:{query}")]
+
+    monkeypatch.setattr(core_search, "web_search", fake_search)
+    cfg = load_config({"OPENCODE_GO_API_KEY": "ok", "SEARCH_API_KEY": "fk"})
+    monkeypatch.setattr(core_config, "_config", cfg, raising=False)
+    requests: list[dict] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requests.append(body)
+        if len(requests) == 1:
+            calls = [
+                {"id": "c1", "type": "function", "function": {"name": "web_search", "arguments": json.dumps({"query": "q1"})}},
+                {"id": "c2", "type": "function", "function": {"name": "web_search", "arguments": json.dumps({"query": "q2"})}},
+                {"id": "c3", "type": "function", "function": {"name": "web_search", "arguments": json.dumps({"query": "q3"})}},
+            ]
+            return httpx.Response(
+                200, json={"choices": [{"finish_reason": "tool_calls", "message": {"content": "", "tool_calls": calls}}]}
+            )
+        return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": "汇总好了"}}]})
+
+    completion = asyncio.run(
+        llm.chat_once("汇总三条", cfg.providers["opencode_go"], transport=httpx.MockTransport(handler))
+    )
+    assert completion.text == "汇总好了"
+    assert queries == ["q1", "q2"]  # 实际只执行前 2 个搜索
+    tool_msgs = [m for m in requests[1]["messages"] if m.get("role") == "tool"]
+    assert [m["tool_call_id"] for m in tool_msgs] == ["c1", "c2", "c3"]  # 3 个调用全部有回填
+
+
+def test_tool_loop_force_final_round_strips_tools(monkeypatch):
+    """模型每轮都还想搜索：最后强制一轮不带工具，逼出最终回答，而不是报轮次超限。"""
+
+    async def fake_search(query, **kwargs):
+        return []
+
+    monkeypatch.setattr(core_search, "web_search", fake_search)
+    cfg = load_config({"OPENCODE_GO_API_KEY": "ok", "SEARCH_API_KEY": "fk", "LLM_TOOL_MAX_ROUNDS": "2"})
+    monkeypatch.setattr(core_config, "_config", cfg, raising=False)
+    seen_tools: list[bool] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        seen_tools.append("tools" in body)
+        if "tools" in body:
+            calls = [
+                {
+                    "id": f"c{len(seen_tools)}",
+                    "type": "function",
+                    "function": {"name": "web_search", "arguments": json.dumps({"query": "x"})},
+                }
+            ]
+            return httpx.Response(
+                200, json={"choices": [{"finish_reason": "tool_calls", "message": {"content": "", "tool_calls": calls}}]}
+            )
+        return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": "最终汇总"}}]})
+
+    completion = asyncio.run(
+        llm.chat_once("汇总", cfg.providers["opencode_go"], transport=httpx.MockTransport(handler))
+    )
+    assert completion.text == "最终汇总"
+    assert seen_tools == [True, True, False]  # 2 轮工具 + 1 轮强制收尾
+
+
 def test_tool_error_retries_without_tools(monkeypatch):
-    cfg = load_config({"DEEPSEEK_API_KEY": "dk", "SEARCH_API_KEY": "fk"})
+    cfg = load_config({"OPENCODE_GO_API_KEY": "ok", "SEARCH_API_KEY": "fk"})
     monkeypatch.setattr(core_config, "_config", cfg, raising=False)
     seen: list[bool] = []
 
@@ -295,7 +350,7 @@ def test_tool_error_retries_without_tools(monkeypatch):
         return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": "好"}}]})
 
     completion = asyncio.run(
-        llm.chat_once("hi", cfg.providers["deepseek"], transport=httpx.MockTransport(handler))
+        llm.chat_once("hi", cfg.providers["opencode_go"], transport=httpx.MockTransport(handler))
     )
     assert completion.text == "好"
     assert seen == [True, False]
@@ -311,8 +366,8 @@ def test_chat_falls_back_until_success(monkeypatch):
         return llm.Completion(text="备用成功", reasoning="想了想")
 
     monkeypatch.setattr(llm, "chat_once", fake_chat_once)
-    reply = asyncio.run(llm.chat("hi", chain=["local", "deepseek"]))
-    assert calls == ["local", "deepseek"]
-    assert reply.provider == "deepseek"
+    reply = asyncio.run(llm.chat("hi", chain=["local", "opencode_go"]))
+    assert calls == ["local", "opencode_go"]
+    assert reply.provider == "opencode_go"
     assert reply.text == "备用成功"
     assert reply.reasoning == "想了想"

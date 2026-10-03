@@ -1,4 +1,4 @@
-"""LLM 调用（local / deepseek / opencode_go 三后端）+ 思考模式 + 失败回退 + 限频。"""
+"""LLM 调用（local / opencode_go 双后端）+ 思考模式 + 失败回退 + 限频。"""
 from __future__ import annotations
 
 import json
@@ -213,7 +213,9 @@ async def chat_once(
     headers = _build_headers(provider, session_key)
     total_tokens = 0
     async with httpx.AsyncClient(timeout=cfg.llm_timeout, transport=transport) as client:
-        for _round in range(cfg.llm_tool_max_rounds):
+        # 允许 llm_tool_max_rounds 轮工具调用；最后追加 1 轮“强制不带工具”，逼出最终回答
+        for _round in range(cfg.llm_tool_max_rounds + 1):
+            force_final = _round >= cfg.llm_tool_max_rounds
             if budget.exhausted():
                 raise QuotaExceededError("今日 token 额度已用完")
             est_ctx = sum(budget.estimate_tokens(str(m.get("content", ""))) for m in messages)
@@ -228,11 +230,11 @@ async def chat_once(
                 "max_tokens": max_out,
                 "stream": False,
             }
-            if tools:
+            if tools and not force_final:
                 payload["tools"] = tools
             payload.update(provider.extra_payload)
             resp = await client.post(url, headers=headers, json=payload)
-            if tools and _looks_like_tool_error(resp):
+            if tools and not force_final and _looks_like_tool_error(resp):
                 # 该后端不认 tools：去掉工具重试（本会话内后续也不再携带）
                 tools = None
                 payload.pop("tools", None)
@@ -242,7 +244,7 @@ async def chat_once(
             choice = data["choices"][0]
             message = choice.get("message") or {}
             tool_calls = message.get("tool_calls") or []
-            if tool_calls:
+            if tool_calls and not force_final:
                 round_tokens = _extract_usage(data, messages, "", "")
                 if round_tokens > 0:
                     budget.record(provider.name, round_tokens)
@@ -250,7 +252,9 @@ async def chat_once(
                 messages.append(
                     {"role": "assistant", "content": message.get("content") or "", "tool_calls": tool_calls}
                 )
-                for call in tool_calls[:2]:  # 每轮最多执行 2 个搜索
+                # 关键：必须为每个 tool_call 回填一条 tool 消息；
+                # 模型一轮发起多个调用时漏回填任意一个，下一轮请求会因历史不合法被拒（400）
+                for idx, call in enumerate(tool_calls):
                     fn = call.get("function") or {}
                     query = ""
                     try:
@@ -258,7 +262,10 @@ async def chat_once(
                         query = str(args.get("query") or "").strip()
                     except Exception:  # noqa: BLE001
                         pass
-                    result = await _run_search_tool(query, cfg)
+                    if idx < 2:  # 每轮最多实际执行 2 个搜索；超出的也必须回填（跳过说明）
+                        result = await _run_search_tool(query, cfg)
+                    else:
+                        result = "（本轮搜索次数已达上限，该搜索未执行；请基于已获得的结果回答）"
                     messages.append({"role": "tool", "tool_call_id": call.get("id") or "", "content": result})
                 continue
             finish_reason = choice.get("finish_reason")

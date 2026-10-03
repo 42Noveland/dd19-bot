@@ -69,7 +69,6 @@ class Provider:
 
 _PROVIDER_ALIASES = {
     "local": "local",
-    "deepseek": "deepseek",
     "opencode_go": "opencode_go",
     "opencode-go": "opencode_go",
     "opencode": "opencode_go",
@@ -80,13 +79,6 @@ _PROVIDER_ALIASES = {
 def normalize_provider_name(raw: str) -> str | None:
     return _PROVIDER_ALIASES.get(raw.strip().lower())
 
-
-def _deepseek_payload(env: Mapping[str, str]) -> dict[str, Any]:
-    if not _is_on(env, "LLM_DEEPSEEK_THINKING", "on"):
-        return {"thinking": {"type": "disabled"}}
-    effort = _norm_effort(env.get("LLM_DEEPSEEK_REASONING_EFFORT", "high"))
-    # DeepSeek 官方契约（Hermes 实机验证）：显式 thinking 开关 + 顶层 reasoning_effort
-    return {"thinking": {"type": "enabled"}, "reasoning_effort": effort}
 
 
 def _opencode_payload(env: Mapping[str, str]) -> dict[str, Any]:
@@ -111,15 +103,6 @@ def _build_providers(env: Mapping[str, str]) -> dict[str, Provider]:
             api_key=_get_key(env, "LLM_LOCAL_API_KEY"),
             max_output=_opt_int(env, "LLM_LOCAL_MAX_OUTPUT"),
             supports_tools=_is_on(env, "LLM_LOCAL_TOOLS", "0"),
-        ),
-        "deepseek": Provider(
-            name="deepseek",
-            base_url=env.get("LLM_DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
-            model=env.get("LLM_DEEPSEEK_MODEL", "deepseek-flash"),
-            api_key=_get_key(env, "LLM_DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY"),
-            extra_payload=_deepseek_payload(env),
-            max_output=_opt_int(env, "LLM_DEEPSEEK_MAX_OUTPUT"),
-            supports_tools=_is_on(env, "LLM_DEEPSEEK_TOOLS", "1"),
         ),
         "opencode_go": Provider(
             name="opencode_go",
