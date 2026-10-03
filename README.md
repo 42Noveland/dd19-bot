@@ -16,7 +16,7 @@ D:\agent-workspace\qqbot\
 │   ├─ core\                 核心（config/llm/budget/search/gate/context/vision）
 │   ├─ plugins\              插件（basic/llm_chat/observer 消息观察者）
 │   ├─ persona.md            人设「十九」（默认；system prompt，可编辑）
-│   ├─ persona-sparkle.md    备用人设：毒舌小恶魔（SillyTavern 角色卡适配版，可切换）
+│   ├─ persona-*.md          备用人设（sparkle=毒舌小恶魔、elena=安静温柔；SillyTavern 卡适配版，可切换）
 │   ├─ tools\                小工具（card2persona.py：SillyTavern 角色卡→人设 md 草稿）
 │   ├─ data\                 感知层数据（context.db 群上下文 / images 图片库，gitignore）
 │   ├─ start-bot.cmd         一键启动脚本
