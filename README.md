@@ -15,7 +15,9 @@ D:\agent-workspace\qqbot\
 │   ├─ bot.py                入口（OneBot v11 适配器 + 插件加载）
 │   ├─ core\                 核心（config/llm/budget/search/gate/context/vision）
 │   ├─ plugins\              插件（basic/llm_chat/observer 消息观察者）
-│   ├─ persona.md            人设「十九」（system prompt，可编辑）
+│   ├─ persona.md            人设「十九」（默认；system prompt，可编辑）
+│   ├─ persona-sparkle.md    备用人设：毒舌小恶魔（SillyTavern 角色卡适配版，可切换）
+│   ├─ tools\                小工具（card2persona.py：SillyTavern 角色卡→人设 md 草稿）
 │   ├─ data\                 感知层数据（context.db 群上下文 / images 图片库，gitignore）
 │   ├─ start-bot.cmd         一键启动脚本
 │   └─ tests\e2e\            全链路自测（fake_napcat + 探针×2）
@@ -63,7 +65,7 @@ D:\agent-workspace\qqbot\
 | LLM_PROVIDER | opencode_go | 主选后端（deepseek-v4.1-flash） |
 | LLM_FALLBACKS | （空） | 回退链；留空=只用主选。可填 local 让本机模型兜底 |
 | LLM_REPLY_MODE | mention | 默认：@我/引用回复才聊；all=所有消息都聊；command=仅 /chat |
-| LLM_PERSONA_FILE | persona.md | 人设文件；也可用 LLM_SYSTEM_PROMPT 单行直写（优先级更高） |
+| LLM_PERSONA_FILE | persona.md | 人设文件（改此值+重启即可切换；现有 persona.md=十九、persona-sparkle.md）；也可用 LLM_SYSTEM_PROMPT 单行直写（优先级更高） |
 | LLM_MAX_TOKENS | 100000 | 单次会话 token 上限（输入估算+输出上限合计；超长输入自动截断） |
 | LLM_DAILY_TOKEN_LIMIT | 10000000 | 单日 token 上限（跨后端合计；北京时间每日重置，存 bot/logs/token-usage.json） |
 | LLM_QUOTA_REPLY | 白饭吃完了QAQ | 额度用完后的固定回复 |
