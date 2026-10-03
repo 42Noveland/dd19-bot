@@ -83,3 +83,24 @@ def test_describe_disabled_or_bad_url(tmp_path, monkeypatch):
     monkeypatch.setattr(vision, "_download", boom)
     cfg = load_config({})
     assert asyncio.run(vision.describe("http://x/2.png", cfg)) == ""
+
+
+def test_describe_prefers_local_file(tmp_path, monkeypatch):
+    """有本地缓存文件时不得走 URL 下载（QQ CDN 链接会过期）。"""
+    _setup(tmp_path, monkeypatch)
+    payload = b"\x89PNG" + b"z" * 64
+    f = tmp_path / "cached.png"
+    f.write_bytes(payload)
+
+    async def boom(url, timeout):
+        raise AssertionError("不应该走 URL 下载")
+
+    monkeypatch.setattr(vision, "_download", boom)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": [{"message": {"content": "本地缓存猫"}}]})
+
+    monkeypatch.setattr(vision, "_transport", httpx.MockTransport(handler))
+    cfg = load_config({"OPENCODE_GO_API_KEY": "ok"})
+    out = asyncio.run(vision.describe("http://img/dead.png", cfg, local_path=str(f)))
+    assert out == "本地缓存猫"

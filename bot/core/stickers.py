@@ -32,11 +32,13 @@ def tool_spec() -> dict:
                 "从图库里挑一张表情包/图片发到群里（斗图、接梗、表达情绪）。"
                 "当你觉得发张图比说话更合适时调用；query 用简短词语描述想表达的意思，"
                 "如：无语、笑死、点赞、委屈、猫猫困惑、得意。"
+                "用户明确要求重发刚才那张时，把 repeat 设为 true。"
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "query": {"type": "string", "description": "想表达的意思/情绪关键词"},
+                    "repeat": {"type": "boolean", "description": "用户明确要求重发刚才发过的那张时设为 true"},
                 },
                 "required": ["query"],
             },
@@ -61,34 +63,36 @@ def _recent_md5s(group_id: int) -> set[str]:
     return {md5 for md5, _ in _last_sent[group_id]}
 
 
-def pick(query: str, group_id: int) -> dict | None:
-    """按语义相似度挑一张图；没有合适的返回 None。"""
+def pick(query: str, group_id: int, repeat: bool = False) -> dict | None:
+    """按语义相似度挑一张图；仅当图库为空/文件全失效时返回 None。
+
+    - repeat=True（用户明确要求重发）：不受防重窗口限制。
+    - 无关键词匹配时随机发一张（模型既然调用了工具，说明该发图——宁发勿尬聊）。
+    - 全部候选都在防重窗口内（小图库）时兜底允许重发。
+    """
     query = (query or "").strip()
-    if not query:
-        return None
-    candidates = context.sticker_candidates()
+    candidates = [
+        c
+        for c in context.sticker_candidates()
+        if str(c.get("path") or "") and Path(str(c["path"])).exists()
+    ]
     if not candidates:
         return None
-    q = _keywords(query)
     recent = _recent_md5s(group_id)
+    pool = candidates if repeat else [c for c in candidates if c["md5"] not in recent]
+    if not pool:
+        pool = candidates  # 小图库全被防重排除：宁发勿尬
+    q = _keywords(query)
     scored: list[tuple[int, float, float, dict]] = []
-    for row in candidates:
-        if row["md5"] in recent:
-            continue
-        path = str(row.get("path") or "")
-        if not path or not Path(path).exists():
-            continue
+    for row in pool:
         caption = str(row.get("caption") or "")
         kw = len(q & _keywords(caption)) if q else 0
         pop = min(int(row.get("seen_count") or 1), 5) * 0.15
         scored.append((kw, pop, random.random(), row))
-    if not scored:
-        return None
     scored.sort(key=lambda t: (t[0], t[1], t[2]), reverse=True)
-    best = scored[0]
-    if best[0] <= 0:
-        return None  # 完全沾不上边：不硬发
-    return best[3]
+    if scored[0][0] <= 0:
+        return random.choice(pool)  # 没有贴切的：随机发一张
+    return scored[0][3]
 
 
 def note_sent(group_id: int, md5: str) -> None:

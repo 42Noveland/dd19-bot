@@ -8,15 +8,13 @@ from __future__ import annotations
 
 import base64
 import hashlib
-import logging
 from pathlib import Path
 
 import httpx
+from loguru import logger as _log
 
 from . import budget, context
 from .config import Config
-
-_log = logging.getLogger("qqbot.vision")
 
 _IMAGES_DIR = Path(__file__).resolve().parents[1] / "data" / "images"
 _MAX_BYTES = 10 * 1024 * 1024
@@ -99,14 +97,26 @@ async def _caption_local(data: bytes, cfg: Config) -> str:
     return str((result["choices"][0].get("message") or {}).get("content") or "").strip()
 
 
-async def describe(url: str, cfg: Config) -> str:
-    """下载并生成图片描述；失败返回 ""。已识别过的图片走 md5 缓存（零成本）。"""
-    if not cfg.vision_enabled or not url:
+async def describe(url: str, cfg: Config, local_path: str = "") -> str:
+    """获取图片并生成描述；失败返回 ""。已识别过的图片走 md5 缓存（零成本）。
+
+    取图优先本地文件（NapCat 缓存；QQ CDN 链接短时效，会过期），URL 下载仅兜底。
+    """
+    if not cfg.vision_enabled:
         return ""
-    try:
-        data = await _download(url, cfg.vision_timeout)
-    except Exception as exc:  # noqa: BLE001 —— 链接过期/网络失败：放弃，保持占位
-        _log.warning("vision download failed: %s", exc)
+    data = b""
+    if local_path:
+        try:
+            data = Path(local_path).read_bytes()
+        except Exception:  # noqa: BLE001 —— 缓存被清理等情况：转走 URL 兜底
+            data = b""
+    if not data and url:
+        try:
+            data = await _download(url, cfg.vision_timeout)
+        except Exception as exc:  # noqa: BLE001 —— 链接过期/网络失败：放弃，保持占位
+            _log.warning("vision download failed: {}", exc)
+            return ""
+    if not data:
         return ""
     md5 = hashlib.md5(data).hexdigest()
     cached = context.image_get(md5)
@@ -128,7 +138,7 @@ async def describe(url: str, cfg: Config) -> str:
         except Exception:  # noqa: BLE001
             caption = ""
     if not caption:
-        _log.warning("vision caption empty (cloud+local) for %s", url[:120])
+        _log.warning("vision caption empty (cloud+local) for {}", (url or local_path)[:120])
     path = ""
     try:
         _IMAGES_DIR.mkdir(parents=True, exist_ok=True)

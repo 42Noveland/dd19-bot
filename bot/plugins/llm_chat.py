@@ -92,9 +92,10 @@ def _make_sticker_handler(bot: Bot, event: GroupMessageEvent):
         if sent["n"] >= 1:
             return "本轮已经发过表情包了，先别刷图，用文字接着说"
         query = str(args.get("query") or "").strip()
-        row = stickers.pick(query, event.group_id)
+        repeat = bool(args.get("repeat"))
+        row = stickers.pick(query, event.group_id, repeat=repeat)
         if row is None:
-            return "图库里没有合适的表情包，用文字回复吧"
+            return "图库还是空的（还没从群里收到可用图片），先用文字回复吧"
         try:
             uri = Path(str(row["path"])).resolve().as_uri()
             await bot.send(event, MessageSegment.image(uri))

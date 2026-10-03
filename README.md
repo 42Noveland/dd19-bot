@@ -38,12 +38,13 @@ D:\agent-workspace\qqbot\
 | 项目 | 命令/位置 | 期望 |
 |---|---|---|
 | 端口存活 | 浏览器开 http://127.0.0.1:8081/ | 返回 404 = 正常 |
-| 单元测试 | `cd bot && .venv\Scripts\python.exe -m pytest -q tests` | `63 passed` |
+| 单元测试 | `cd bot && .venv\Scripts\python.exe -m pytest -q tests` | `65 passed` |
 | 感知层探针 | bot 运行时 `.venv\Scripts\python.exe tests\e2e\probe_context_vision.py [图片URL]` | 记忆/图片均 ✓ |
 | @ 解析探针 | `.venv\Scripts\python.exe tests\e2e\probe_mention_parse.py` | 4 种 @ 形态正常 |
 | 表情包探针 | `.venv\Scripts\python.exe tests\e2e\probe_sticker.py` | 收到图片发送 |
 | 全链路自测 | bot 运行时 `bot\.venv\Scripts\python.exe bot\tests\e2e\fake_napcat.py` | `ALL PASS` |
 | NapCat 面板 | http://127.0.0.1:6099/webui（token 见 `napcat\NapCat.Shell.Node\napcat\config\webui.json`） | 仅本机可访问 |
+- NapCat HTTP API：127.0.0.1:3000（仅本机，调试/运维用；get_image、send_group_msg 等）
 | 群内 | `/ping` `/jrrp` `/help`；`@dd19 内容`；`/search 关键词`；`/usage`；`/model`（管理员） | 正常回复 |
 
 ## 关键配置（bot\.env）
@@ -79,7 +80,7 @@ D:\agent-workspace\qqbot\
 - **群上下文（感知层）**：机器人**静默记录**白名单群的全部消息（本地 SQLite `bot/data/context.db`，保留 7 天）；
   回复时自动附带最近 12 条群聊作为背景（`LLM_CONTEXT_MESSAGES` 可调，0=关闭）——它"看得到"群里在聊什么，
   也记得住刚才谁说过什么。
-- **图片识别（感知层）**：群里的图片即收即下（QQ CDN 链接会过期）、md5 去重后走 opencode-go 云 vision
+- **图片识别（感知层）**：群里的图片即收即下——优先从 NapCat 本地缓存取图（QQ CDN 链接短时效，不可依赖）、md5 去重后走 opencode-go 云 vision
   生成描述（本地 MiniCPM-V 兜底），描述写回上下文——重复的图零成本；识别结果同时是贴图库的底账。
   `VISION_ENABLED=0` 可关闭。
 - **表情包回应（表达层）**：聊天中 LLM 可按需调用 `send_sticker` 从图库挑一张表情包发出
@@ -147,6 +148,8 @@ D:\agent-workspace\qqbot\
   图片识别全链路（下载→去重→云 vision→回填：测试图读出"苹果数量=42"；真实群表情包识别+回填）✔；
   句中 @ 昵称渲染、回复自身记录入上下文 ✔；单测 56 passed。
 - **表达层·表情包回应（2026-10-03）**：send_sticker 工具上线（LLM 按需调用→图库语义匹配→发图→记账）；
-  实测探针："来张'得意'的表情包" → 发出群里收集的女仆图 + "发了，够得意了吧哈哈" ✔；单测 63 passed。
+  实测探针："来张'得意'的表情包" → 发出群里收集的女仆图 + "发了，够得意了吧哈哈" ✔；单测 65 passed。
+- **图片管道加固（2026-10-03）**：取图改为 **NapCat 本地缓存优先**（`get_image` API），修掉 CDN 链接过期导致的静默失败；
+  补识别 2 张历史图（含 1.3MB 动图）；真机发图实测通过（`file:///` 路径，retcode 0）。
 - 未做/待办：本机 llama（local 后端）实机测试（需先启动 start-qwen38.cmd 后 `/model test local`）；
   手机访问 6099 的负测试（WebUI 已限 127.0.0.1）；48 小时风控观察。

@@ -7,7 +7,9 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
+from loguru import logger as _log
 from nonebot import on_message
 from nonebot.adapters.onebot.v11 import Bot, Event, GroupMessageEvent
 from nonebot.rule import Rule
@@ -37,8 +39,9 @@ async def _record(bot: Bot, event: GroupMessageEvent) -> None:
     for seg in message:
         if seg.type == "image":
             url = str(seg.data.get("url") or "").strip()
-            if url:
-                media.append({"type": "image", "url": url})
+            file = str(seg.data.get("file") or "").strip()
+            if url or file:
+                media.append({"type": "image", "url": url, "file": file})
     names = await resolve_at_names(bot, event.group_id, message)
     text = render_message_text(message, str(bot.self_id), names)
     if media:
@@ -57,15 +60,32 @@ async def _record(bot: Bot, event: GroupMessageEvent) -> None:
         media=media or None,
     )
     if media and cfg.vision_enabled:
-        task = asyncio.create_task(_caption_later(row_id, str(media[0]["url"]), cfg))
+        task = asyncio.create_task(_caption_later(bot, row_id, media[0], cfg))
         _tasks.add(task)
         task.add_done_callback(_tasks.discard)
 
 
-async def _caption_later(row_id: int, url: str, cfg) -> None:
-    """异步识别图片并把描述回填到消息文本（替换第一个 "[图片]" 占位）。"""
+async def _resolve_local(bot: Bot, file_name: str) -> str:
+    """优先从 NapCat 本地缓存取图（QQ CDN 链接短时效会过期）；拿不到返回 ""。"""
+    if not file_name:
+        return ""
     try:
-        caption = await vision.describe(url, cfg)
+        data = await asyncio.wait_for(bot.call_api("get_image", file=file_name), timeout=8)
+    except Exception:  # noqa: BLE001 —— 探针/旧版本不支持时静默走 URL 兜底
+        return ""
+    path = str((data or {}).get("file") or "")
+    if path.startswith("file://"):
+        path = path[7:]
+        if len(path) > 2 and path[0] == "/" and path[2] == ":":
+            path = path[1:]
+    return path if path and Path(path).exists() else ""
+
+
+async def _caption_later(bot: Bot, row_id: int, media: dict, cfg) -> None:
+    """异步识别图片并把描述回填到消息文本（替换第一个 "[图片]" 占位）。"""
+    local_path = await _resolve_local(bot, str(media.get("file") or ""))
+    try:
+        caption = await vision.describe(str(media.get("url") or ""), cfg, local_path=local_path)
     except Exception:  # noqa: BLE001
         return
     if not caption:
@@ -75,3 +95,4 @@ async def _caption_later(row_id: int, url: str, cfg) -> None:
         return
     new_text = str(row["text"]).replace("[图片]", f"[图片: {caption}]", 1)
     context.update_message_text(row_id, new_text)
+    _log.info("image captioned (row {}): {}", row_id, caption[:80])
