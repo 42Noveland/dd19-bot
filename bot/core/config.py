@@ -129,6 +129,7 @@ def _parse_provider_list(raw: str, known: set[str]) -> list[str]:
 class Config:
     allowed_group_ids: set[int] = field(default_factory=set)
     bot_name: str = "十九"
+    bot_qq: int = 123456789
     llm_enabled: bool = False
     llm_provider: str = "local"
     llm_fallbacks: list[str] = field(default_factory=list)
@@ -163,6 +164,10 @@ class Config:
     memory_tick: int = 120
     mood_enabled: bool = True
     mood_tick: int = 600
+    style_enabled: bool = True
+    style_tick: int = 300
+    jargon_enabled: bool = True
+    jargon_tick: int = 600
     providers: dict[str, Provider] = field(default_factory=dict)
 
 
@@ -197,6 +202,7 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
     return Config(
         allowed_group_ids=_parse_ids(env.get("ALLOWED_GROUP_IDS", "")),
         bot_name=env.get("BOT_NAME", "十九"),
+        bot_qq=int(float(env.get("BOT_QQ", "123456789"))),
         llm_enabled=env.get("LLM_ENABLED", "0").strip().lower() in _ON_VALUES,
         llm_provider=primary,
         llm_fallbacks=fallbacks,
@@ -232,6 +238,10 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         memory_tick=int(float(env.get("MEMORY_TICK", "120"))),
         mood_enabled=_is_on(env, "MOOD_ENABLED", "1"),
         mood_tick=int(float(env.get("MOOD_TICK", "600"))),
+        style_enabled=_is_on(env, "STYLE_ENABLED", "1"),
+        style_tick=int(float(env.get("STYLE_TICK", "300"))),
+        jargon_enabled=_is_on(env, "JARGON_ENABLED", "1"),
+        jargon_tick=int(float(env.get("JARGON_TICK", "600"))),
         providers=providers,
     )
 

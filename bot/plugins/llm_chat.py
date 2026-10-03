@@ -14,7 +14,7 @@ from nonebot.params import CommandArg
 from nonebot.permission import SUPERUSER
 from nonebot.rule import Rule
 
-from core import budget, context, llm, memory, mood, personas, search, stickers
+from core import budget, context, jargon, llm, memory, mood, personas, search, stickers, style_pairs
 from core.config import get_config, normalize_provider_name
 from core.gate import is_allowed_group, render_message_text, should_reply_plain, strip_text_mention
 from plugins._shared import resolve_at_names, sender_name
@@ -180,9 +180,24 @@ async def chat_flow(
         )
     elif mem_block:
         prompt = f"{mem_block}\n\n{text}"
+    persona_name, persona_text = personas.resolve(event.group_id)
     extra_tools = None
     tool_handler = None
     blocks: list[str] = []
+    if cfg.style_enabled:
+        try:
+            style_block = style_pairs.for_prompt(event.group_id, text, persona=persona_name)
+            if style_block:
+                blocks.append(style_block)
+        except Exception:  # noqa: BLE001 —— 风格库异常不影响聊天
+            pass
+    if cfg.jargon_enabled:
+        try:
+            jargon_block = jargon.for_prompt(event.group_id, text)
+            if jargon_block:
+                blocks.append(jargon_block)
+        except Exception:  # noqa: BLE001 —— 黑话异常不影响聊天
+            pass
     if cfg.mood_enabled:
         try:
             mood_block = mood.for_prompt(event.group_id)
@@ -205,7 +220,6 @@ async def chat_flow(
     if extra_note:
         blocks.append(extra_note)
     dynamic_blocks = "\n\n".join(blocks)  # 动态块拼用户消息尾部（保 system 前缀缓存）
-    persona_name, persona_text = personas.resolve(event.group_id)
     try:
         reply = await llm.chat(
             prompt,

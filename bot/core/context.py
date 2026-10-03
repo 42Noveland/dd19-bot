@@ -95,6 +95,34 @@ def _db() -> sqlite3.Connection:
                 persona TEXT NOT NULL,
                 updated_ts REAL NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS style_pairs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id INTEGER NOT NULL,
+                persona TEXT NOT NULL DEFAULT '',
+                situation TEXT NOT NULL,
+                expression TEXT NOT NULL,
+                weight REAL NOT NULL DEFAULT 1.0,
+                last_active_ts REAL NOT NULL,
+                create_ts REAL NOT NULL
+            );
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_style_pairs_uniq
+                ON style_pairs(group_id, persona, situation, expression);
+            CREATE TABLE IF NOT EXISTS style_watermark (
+                group_id INTEGER PRIMARY KEY,
+                last_row_id INTEGER NOT NULL DEFAULT 0,
+                updated_ts REAL NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS jargon (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id INTEGER NOT NULL,
+                term TEXT NOT NULL,
+                meaning TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'rejected',
+                freq INTEGER NOT NULL DEFAULT 0,
+                created_ts REAL NOT NULL,
+                updated_ts REAL NOT NULL,
+                UNIQUE(group_id, term)
+            );
             """
         )
         conn.commit()

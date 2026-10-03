@@ -12,13 +12,11 @@ import re
 import time
 from pathlib import Path
 
-from . import context
+from . import context, decay
 
 _recent_window = 600.0  # 同群重复抑制窗口（秒）
 
-# 热度衰减（借鉴 self-learning 的 15 天二次曲线）：新鲜度 1.0 → 0.2，老图降权但不删除
-_DECAY_DAYS = 15.0
-_DECAY_FLOOR = 0.2
+# 热度衰减曲线见 core.decay（15 天二次，新鲜度 1.0 → 0.2，老图降权但不删除）
 _last_sent: dict[int, list[tuple[str, float]]] = {}
 
 
@@ -127,19 +125,8 @@ def _recent_md5s(group_id: int) -> set[str]:
 
 
 def _freshness(row: dict) -> float:
-    """新鲜度（1.0 → 0.2）：按最近出现时间做 15 天二次衰减（借鉴 self-learning 曲线）。
-
-    0 天 = 1.0；7.5 天 ≈ 0.8；≥15 天 = 0.2 地板——老图仍可用，只是挑选优先级降低。
-    """
-    try:
-        last = float(row.get("last_ts") or 0)
-    except (TypeError, ValueError):
-        last = 0.0
-    if last <= 0:
-        return _DECAY_FLOOR
-    days = max((time.time() - last) / 86400.0, 0.0)
-    ratio = min(days, _DECAY_DAYS) / _DECAY_DAYS
-    return 1.0 - (ratio ** 2) * (1.0 - _DECAY_FLOOR)
+    """新鲜度（1.0 → 0.2）：按最近出现时间做 15 天二次衰减（共享曲线见 core.decay）。"""
+    return decay.freshness(row.get("last_ts"))
 
 
 def pick(query: str, group_id: int, repeat: bool = False) -> dict | None:
