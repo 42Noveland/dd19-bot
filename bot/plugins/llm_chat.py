@@ -115,15 +115,25 @@ def _make_sticker_handler(bot: Bot, event: GroupMessageEvent):
     return _handler
 
 
+async def _reply_out(matcher, event: GroupMessageEvent, text: str) -> None:
+    """发送聊天回复：带引用段（引用触发消息；QUOTE_REPLY_ENABLED=0 可关）。"""
+    cfg = get_config()
+    msg: str | Message = text
+    mid = getattr(event, "message_id", None)
+    if cfg.quote_reply_enabled and mid:
+        msg = MessageSegment.reply(int(mid)) + text
+    await matcher.finish(msg)
+
+
 async def _reply_chat(bot: Bot, matcher, event: GroupMessageEvent, text: str) -> None:
     """公共聊天流程：总开关 → 配额 → 限频 → 群上下文组装 → 主选+回退链 → 组装回复。"""
     cfg = get_config()
     if not cfg.llm_enabled:
-        await matcher.finish("聊天功能未启用（把 bot/.env 里 LLM_ENABLED 改为 1 并重启）")
+        await _reply_out(matcher, event, "聊天功能未启用（把 bot/.env 里 LLM_ENABLED 改为 1 并重启）")
     if budget.exhausted():
-        await matcher.finish(cfg.llm_quota_reply)
+        await _reply_out(matcher, event, cfg.llm_quota_reply)
     if not llm.allow(event.group_id, event.user_id):
-        await matcher.finish("说得太快啦，稍等几秒再聊")
+        await _reply_out(matcher, event, "说得太快啦，稍等几秒再聊")
     prompt = text
     if cfg.llm_context_messages > 0:
         # 群上下文：取触发消息之前最近几条（触发消息此刻已在库，需剔除）
@@ -153,10 +163,10 @@ async def _reply_chat(bot: Bot, matcher, event: GroupMessageEvent, text: str) ->
             extra_system=extra_system,
         )
     except llm.QuotaExceededError:
-        await matcher.finish(cfg.llm_quota_reply)
+        await _reply_out(matcher, event, cfg.llm_quota_reply)
         return
     except Exception as exc:  # noqa: BLE001 —— 所有后端都失败时给用户明确提示
-        await matcher.finish(f"AI 调用失败（所有后端）：{exc}")
+        await _reply_out(matcher, event, f"AI 调用失败（所有后端）：{exc}")
         return
     out = _format_reply(reply)
     try:
@@ -164,7 +174,7 @@ async def _reply_chat(bot: Bot, matcher, event: GroupMessageEvent, text: str) ->
         context.record_message(event.group_id, int(event.self_id), cfg.bot_name, out)
     except Exception:  # noqa: BLE001 —— 记录失败不影响回复
         pass
-    await matcher.finish(out)
+    await _reply_out(matcher, event, out)
 
 
 @chat_all.handle()

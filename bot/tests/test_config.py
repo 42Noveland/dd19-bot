@@ -118,3 +118,8 @@ def test_context_and_vision_config_parse():
 def test_sticker_config_parse():
     assert load_config({}).sticker_enabled is True
     assert load_config({"STICKER_ENABLED": "0"}).sticker_enabled is False
+
+
+def test_quote_reply_config_parse():
+    assert load_config({}).quote_reply_enabled is True
+    assert load_config({"QUOTE_REPLY_ENABLED": "0"}).quote_reply_enabled is False
