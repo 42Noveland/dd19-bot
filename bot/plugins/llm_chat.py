@@ -13,9 +13,10 @@ from nonebot.params import CommandArg
 from nonebot.permission import SUPERUSER
 from nonebot.rule import Rule
 
-from core import budget, llm, search
+from core import budget, context, llm, search
 from core.config import get_config, normalize_provider_name
 from core.gate import is_allowed_group, render_message_text, should_reply_plain, strip_text_mention
+from plugins._shared import resolve_at_names, sender_name
 
 
 async def _allowed(event: Event) -> bool:
@@ -46,31 +47,6 @@ async def _bot_aliases(bot: Bot) -> set[str]:
             pass
         _MENTION_ALIASES[key] = aliases
     return _MENTION_ALIASES[key]
-
-
-_AT_NAME_CACHE: dict[tuple[int, str], str] = {}
-
-
-async def _resolve_at_names(bot: Bot, group_id: int, message: Message) -> dict[str, str]:
-    """为消息里的 @ 段解析昵称（带缓存；失败退化为 QQ 号）。"""
-    names: dict[str, str] = {}
-    for seg in message:
-        if seg.type != "at":
-            continue
-        qq = str(seg.data.get("qq", ""))
-        if not qq or qq == "all" or qq == str(bot.self_id):
-            continue
-        key = (group_id, qq)
-        if key not in _AT_NAME_CACHE:
-            name = qq
-            try:
-                info = await bot.get_group_member_info(group_id=group_id, user_id=int(qq))
-                name = str(info.get("card") or info.get("nickname") or "").strip() or qq
-            except Exception:  # noqa: BLE001 —— 解析失败不阻塞聊天
-                pass
-            _AT_NAME_CACHE[key] = name
-        names[qq] = _AT_NAME_CACHE[key]
-    return names
 
 
 @event_preprocessor
@@ -106,7 +82,7 @@ def _format_reply(reply: llm.Reply) -> str:
 
 
 async def _reply_chat(matcher, event: GroupMessageEvent, text: str) -> None:
-    """公共聊天流程：总开关 → 配额 → 限频 → 主选+回退链 → 组装回复。"""
+    """公共聊天流程：总开关 → 配额 → 限频 → 群上下文组装 → 主选+回退链 → 组装回复。"""
     cfg = get_config()
     if not cfg.llm_enabled:
         await matcher.finish("聊天功能未启用（把 bot/.env 里 LLM_ENABLED 改为 1 并重启）")
@@ -114,15 +90,30 @@ async def _reply_chat(matcher, event: GroupMessageEvent, text: str) -> None:
         await matcher.finish(cfg.llm_quota_reply)
     if not llm.allow(event.group_id, event.user_id):
         await matcher.finish("说得太快啦，稍等几秒再聊")
+    prompt = text
+    if cfg.llm_context_messages > 0:
+        # 群上下文：取触发消息之前最近几条（触发消息此刻已在库，需剔除）
+        history = [
+            row
+            for row in context.recent_messages(event.group_id, limit=cfg.llm_context_messages + 1)
+            if str(row.get("message_id")) != str(event.message_id)
+        ][-cfg.llm_context_messages :]
+        prompt = context.format_context_prompt(history, sender_name(event), text)
     try:
-        reply = await llm.chat(text, session_key=f"qqbot-group-{event.group_id}")
+        reply = await llm.chat(prompt, session_key=f"qqbot-group-{event.group_id}")
     except llm.QuotaExceededError:
         await matcher.finish(cfg.llm_quota_reply)
         return
     except Exception as exc:  # noqa: BLE001 —— 所有后端都失败时给用户明确提示
         await matcher.finish(f"AI 调用失败（所有后端）：{exc}")
         return
-    await matcher.finish(_format_reply(reply))
+    out = _format_reply(reply)
+    try:
+        # 记录机器人自己的回复，保持群上下文完整（bot 也是"群友"）
+        context.record_message(event.group_id, int(event.self_id), cfg.bot_name, out)
+    except Exception:  # noqa: BLE001 —— 记录失败不影响回复
+        pass
+    await matcher.finish(out)
 
 
 @chat_all.handle()
@@ -138,7 +129,7 @@ async def _handle_plain(bot: Bot, event: GroupMessageEvent) -> None:
         return
     if not should_reply_plain(probe, event.is_tome(), cfg.llm_reply_mode):
         return
-    names = await _resolve_at_names(bot, event.group_id, message)
+    names = await resolve_at_names(bot, event.group_id, message)
     text = render_message_text(message, str(bot.self_id), names)
     await _reply_chat(chat_all, event, text)
 
@@ -148,7 +139,7 @@ async def _handle_chat(bot: Bot, event: GroupMessageEvent, args: Message = Comma
     probe = render_message_text(args, str(bot.self_id))
     if not probe:
         await chat.finish("用法：/chat 你想说的话")
-    names = await _resolve_at_names(bot, event.group_id, args)
+    names = await resolve_at_names(bot, event.group_id, args)
     text = render_message_text(args, str(bot.self_id), names)
     await _reply_chat(chat, event, text)
 

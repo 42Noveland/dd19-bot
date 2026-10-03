@@ -102,3 +102,14 @@ def test_provider_alias_and_fallbacks():
     # 已移除的 deepseek 不再是合法后端：显式指定时回落到 local
     cfg2 = load_config({"LLM_PROVIDER": "deepseek"})
     assert cfg2.llm_provider == "local"
+
+
+def test_context_and_vision_config_parse():
+    cfg = load_config({})
+    assert cfg.llm_context_messages == 12
+    assert cfg.vision_enabled is True
+    assert cfg.vision_model == "deepseek-v4-flash-vision-exp"
+    cfg2 = load_config({"LLM_CONTEXT_MESSAGES": "0", "VISION_ENABLED": "off", "VISION_MODEL": "x-vision"})
+    assert cfg2.llm_context_messages == 0
+    assert cfg2.vision_enabled is False
+    assert cfg2.vision_model == "x-vision"

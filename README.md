@@ -13,9 +13,12 @@
 D:\agent-workspace\qqbot\
 ├─ bot\                      NoneBot2 工程（核心/插件/测试/人设）
 │   ├─ bot.py                入口（OneBot v11 适配器 + 插件加载）
+│   ├─ core\                 核心（config/llm/budget/search/gate/context/vision）
+│   ├─ plugins\              插件（basic/llm_chat/observer 消息观察者）
 │   ├─ persona.md            人设「十九」（system prompt，可编辑）
+│   ├─ data\                 感知层数据（context.db 群上下文 / images 图片库，gitignore）
 │   ├─ start-bot.cmd         一键启动脚本
-│   └─ tests\e2e\fake_napcat.py  全链路自测脚本
+│   └─ tests\e2e\            全链路自测（fake_napcat + 探针×2）
 ├─ napcat\NapCat.Shell.Node\ NapCat 协议端（Node 版，自带 QQ 纯 shell 核心）
 └─ napcat\downloads\         组件压缩包备份（NapCat.Shell.Windows.Node.zip）
 ```
@@ -35,7 +38,9 @@ D:\agent-workspace\qqbot\
 | 项目 | 命令/位置 | 期望 |
 |---|---|---|
 | 端口存活 | 浏览器开 http://127.0.0.1:8081/ | 返回 404 = 正常 |
-| 单元测试 | `cd bot && .venv\Scripts\python.exe -m pytest -q tests` | `44 passed` |
+| 单元测试 | `cd bot && .venv\Scripts\python.exe -m pytest -q tests` | `56 passed` |
+| 感知层探针 | bot 运行时 `.venv\Scripts\python.exe tests\e2e\probe_context_vision.py [图片URL]` | 记忆/图片均 ✓ |
+| @ 解析探针 | `.venv\Scripts\python.exe tests\e2e\probe_mention_parse.py` | 4 种 @ 形态正常 |
 | 全链路自测 | bot 运行时 `bot\.venv\Scripts\python.exe bot\tests\e2e\fake_napcat.py` | `ALL PASS` |
 | NapCat 面板 | http://127.0.0.1:6099/webui（token 见 `napcat\NapCat.Shell.Node\napcat\config\webui.json`） | 仅本机可访问 |
 | 群内 | `/ping` `/jrrp` `/help`；`@dd19 内容`；`/search 关键词`；`/usage`；`/model`（管理员） | 正常回复 |
@@ -56,6 +61,8 @@ D:\agent-workspace\qqbot\
 | LLM_QUOTA_REPLY | 白饭吃完了QAQ | 额度用完后的固定回复 |
 | LLM_TOOL_MAX_ROUNDS | 3 | web_search 工具调用的最大轮次 |
 | SEARCH_ENABLED / SEARCH_API_KEY | 1 / Firecrawl | 联网搜索（LLM 按需调用 web_search；/search 手动触发） |
+| LLM_CONTEXT_MESSAGES | 12 | 回复时附带的最近群聊条数（0=关闭上下文注入） |
+| VISION_ENABLED / VISION_MODEL | 1 / deepseek-v4-flash-vision-exp | 图片识别（云 vision 主，本地 MiniCPM-V 兜底） |
 | LLM_*_TOOLS | opencode_go=on, local=off | 各后端是否启用 function calling |
 | LLM_TIMEOUT | 180 | 单次请求超时（秒） |
 | LLM_COOLDOWN | 5 | 每人每群限频（秒） |
@@ -67,9 +74,15 @@ D:\agent-workspace\qqbot\
   命令（/ping 等）直接发即可，无需 @；非白名单群完全静默。
 - **联网搜索**：LLM 按需调用 `web_search` 工具（天气/新闻/价格/事实核查类问题会自动搜，
   回复附参考链接）；也可手动 `/search 关键词`。搜索走 Firecrawl API。
+- **群上下文（感知层）**：机器人**静默记录**白名单群的全部消息（本地 SQLite `bot/data/context.db`，保留 7 天）；
+  回复时自动附带最近 12 条群聊作为背景（`LLM_CONTEXT_MESSAGES` 可调，0=关闭）——它"看得到"群里在聊什么，
+  也记得住刚才谁说过什么。
+- **图片识别（感知层）**：群里的图片即收即下（QQ CDN 链接会过期）、md5 去重后走 opencode-go 云 vision
+  生成描述（本地 MiniCPM-V 兜底），描述写回上下文——重复的图零成本；识别结果同时是贴图库的底账。
+  `VISION_ENABLED=0` 可关闭。
 - **限频**：同一人同一群 5 秒内只能触发一次聊天/搜索。
 - **回退链**：主选失败自动尝试下一个后端，回复末尾可用 `LLM_SHOW_PROVIDER=1` 显示 `[via xxx]`。
-- **Token 控制**：不做多轮上下文——每次 @ 是独立单轮请求（工具调用的各轮也计入预算）。
+- **Token 控制**：每次 @ 是单轮请求（附最近群聊背景，见上；工具调用各轮也计入预算）。
   单次会话上限 `LLM_MAX_TOKENS`（10w，输入估算+输出上限合计；超长输入自动截断）；
   单日上限 `LLM_DAILY_TOKEN_LIMIT`（1kw，北京时间每日重置、持久化、重启不丢）；
   **额度用完时 @bot 只会回复「白饭吃完了QAQ」**；`/usage` 可查当日用量与剩余。
@@ -125,5 +138,8 @@ D:\agent-workspace\qqbot\
     `bot/logs/token-usage.json`（重启不丢、按北京时间跨天重置）；超限固定回复「白饭吃完了QAQ」✔
 - **工具调用修复（2026-10-03）**：一轮内多个 tool_call 逐个回填 + 末轮强制收尾（逼出最终回答），
   修复"多搜索请求 400 / 轮次超限"；DeepSeek 后端移除（链=opencode_go；local 保留可切换）✔
+- **感知层上线（2026-10-03）**：群上下文记录+注入（实测："我最喜欢的数字是73"→被问时答"73 啊，你刚说的"）✔；
+  图片识别全链路（下载→去重→云 vision→回填：测试图读出"苹果数量=42"；真实群表情包识别+回填）✔；
+  句中 @ 昵称渲染、回复自身记录入上下文 ✔；单测 56 passed。
 - 未做/待办：本机 llama（local 后端）实机测试（需先启动 start-qwen38.cmd 后 `/model test local`）；
   手机访问 6099 的负测试（WebUI 已限 127.0.0.1）；48 小时风控观察。

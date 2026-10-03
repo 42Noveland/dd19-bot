@@ -148,6 +148,11 @@ class Config:
     search_base_url: str = "https://api.firecrawl.dev"
     search_max_results: int = 5
     search_timeout: float = 30.0
+    llm_context_messages: int = 12
+    vision_enabled: bool = True
+    vision_model: str = "deepseek-v4-flash-vision-exp"
+    vision_local_url: str = "http://127.0.0.1:8082/v1"
+    vision_timeout: float = 60.0
     providers: dict[str, Provider] = field(default_factory=dict)
 
 
@@ -201,6 +206,12 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         search_base_url=env.get("SEARCH_BASE_URL", "https://api.firecrawl.dev"),
         search_max_results=int(env.get("SEARCH_MAX_RESULTS", "5")),
         search_timeout=float(env.get("SEARCH_TIMEOUT", "30")),
+        llm_context_messages=max(0, int(env.get("LLM_CONTEXT_MESSAGES", "12"))),
+        vision_enabled=_is_on(env, "VISION_ENABLED", "1"),
+        vision_model=env.get("VISION_MODEL", "deepseek-v4-flash-vision-exp").strip()
+        or "deepseek-v4-flash-vision-exp",
+        vision_local_url=env.get("VISION_LOCAL_URL", "http://127.0.0.1:8082/v1").strip(),
+        vision_timeout=float(env.get("VISION_TIMEOUT", "60")),
         providers=providers,
     )
 
