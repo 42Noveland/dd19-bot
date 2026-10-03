@@ -139,3 +139,10 @@ def test_memory_config_parse():
     assert cfg.memory_enabled is True and cfg.memory_batch == 30 and cfg.memory_tick == 120
     cfg2 = load_config({"MEMORY_ENABLED": "0", "MEMORY_BATCH": "50", "MEMORY_TICK": "60"})
     assert cfg2.memory_enabled is False and cfg2.memory_batch == 50 and cfg2.memory_tick == 60
+
+
+def test_mood_config_parse():
+    cfg = load_config({})
+    assert cfg.mood_enabled is True and cfg.mood_tick == 600
+    cfg2 = load_config({"MOOD_ENABLED": "0", "MOOD_TICK": "300"})
+    assert cfg2.mood_enabled is False and cfg2.mood_tick == 300

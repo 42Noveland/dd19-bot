@@ -135,6 +135,6 @@ async def _judge_and_maybe_reply(bot: Bot, event: GroupMessageEvent) -> None:
     except llm.QuotaExceededError:
         return
     except Exception as exc:  # noqa: BLE001 —— 主动接话失败保持安静
-        _log.warning("auto reply failed [{}]: {}", gid, exc)
+        _log.opt(exception=True).warning("auto reply failed [{}]: {}: {}", gid, type(exc).__name__, exc)
     finally:
         _inflight.discard(gid)

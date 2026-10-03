@@ -24,13 +24,33 @@ def reset() -> None:
 
 
 def chat_hint() -> str:
-    """挂载 send_sticker 时注入的系统提示：自然配图引导 + 频率自控。"""
+    """挂载 send_sticker 时注入的系统提示：自然配图引导 + 综合挑选 + 频率自控。"""
     return (
         "【表情包】你的图库里有从群里收集的表情包。回复群友时，如果配一张表情包能更好地表达情绪或接梗"
         "（吐槽、无语、开心、安慰、得意、自嘲等），就调用 send_sticker 配一张——不用等对方要图；"
-        "query 要同时参考对方的话和你这条回复的基调。频率上克制一点：参考群聊记录里你最近发过的图，"
-        "大约每 3~5 次回复最多配 1 张，别连着发。对方明确要图或要重发时必须配。"
+        "挑选时综合三样东西：你现在的心情、对方说的话、正在聊的话题；query 尽量用下面图库清单里的关键词。"
+        "频率上克制一点：参考群聊记录里你最近发过的图，大约每 3~5 次回复最多配 1 张，别连着发。"
+        "对方明确要图或要重发时必须配。"
     )
+
+
+def library_summary(limit: int = 12) -> str:
+    """图库清单（喂给模型挑 query）：序号 + 简短描述。"""
+    try:
+        rows = context.sticker_candidates(limit=limit)
+    except Exception:  # noqa: BLE001
+        return ""
+    items: list[str] = []
+    for i, row in enumerate(rows, 1):
+        cap = str(row.get("caption") or "").strip()
+        for prefix in ("这是一张", "一张", "图片中", "图中", "画面里", "画面"):
+            if cap.startswith(prefix):
+                cap = cap[len(prefix):]
+                break
+        cap = cap[:26]
+        if cap:
+            items.append(f"{i}.{cap}")
+    return "；".join(items)
 
 
 def tool_spec() -> dict:

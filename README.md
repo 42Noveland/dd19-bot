@@ -38,7 +38,7 @@ D:\agent-workspace\qqbot\
 | 项目 | 命令/位置 | 期望 |
 |---|---|---|
 | 端口存活 | 浏览器开 http://127.0.0.1:8081/ | 返回 404 = 正常 |
-| 单元测试 | `cd bot && .venv\Scripts\python.exe -m pytest -q tests` | `81 passed` |
+| 单元测试 | `cd bot && .venv\Scripts\python.exe -m pytest -q tests` | `87 passed` |
 | 感知层探针 | bot 运行时 `.venv\Scripts\python.exe tests\e2e\probe_context_vision.py [图片URL]` | 记忆/图片均 ✓ |
 | @ 解析探针 | `.venv\Scripts\python.exe tests\e2e\probe_mention_parse.py` | 4 种 @ 形态正常 |
 | 表情包探针 | `.venv\Scripts\python.exe tests\e2e\probe_sticker.py` | 收到图片发送 |
@@ -47,6 +47,7 @@ D:\agent-workspace\qqbot\
 | 主动接话探针 | `.venv\Scripts\python.exe tests\e2e\probe_auto_reply.py [消息]` | 判定→接话→引用回复（统计性，带冷却） |
 | 记忆探针 | `.venv\Scripts\python.exe tests\e2e\probe_memory.py` | 提炼+注入（回答含"蓝色"） |
 | 记忆检索探针 | `.venv\Scripts\python.exe tests\e2e\probe_memory_recall.py mention\|name` | 两条路径命中（73 / 蓝色；跑前间隔 ≥6s 防限频） |
+| 情绪探针 | `.venv\Scripts\python.exe tests\e2e\probe_mood.py` | 设置→注入（回答含"得意"） |
 | 全链路自测 | bot 运行时 `bot\.venv\Scripts\python.exe bot\tests\e2e\fake_napcat.py` | `ALL PASS` |
 | NapCat 面板 | http://127.0.0.1:6099/webui（token 见 `napcat\NapCat.Shell.Node\napcat\config\webui.json`） | 仅本机可访问 |
 - NapCat HTTP API：127.0.0.1:3000（仅本机，调试/运维用；get_image、send_group_msg 等）
@@ -75,6 +76,7 @@ D:\agent-workspace\qqbot\
 | AUTO_REPLY_ENABLED | 1 | 决策层：不@也会判断着接话 |
 | AUTO_REPLY_CHANCE / AUTO_REPLY_COOLDOWN | 0.35 / 240 | 接话概率门 / 每群冷却秒数 |
 | MEMORY_ENABLED / MEMORY_BATCH / MEMORY_TICK | 1 / 30 / 120 | 记忆系统：总开关 / 每批消息数 / 检查间隔秒 |
+| MOOD_ENABLED / MOOD_TICK | 1 / 600 | 情绪系统：总开关 / 心情整理间隔秒 |
 | LLM_*_TOOLS | opencode_go=on, local=off | 各后端是否启用 function calling |
 | LLM_TIMEOUT | 180 | 单次请求超时（秒） |
 | LLM_COOLDOWN | 5 | 每人每群限频（秒） |
@@ -106,6 +108,10 @@ D:\agent-workspace\qqbot\
   （增量处理、去重、上限淘汰），回复时自动注入相关记忆——**说话人本人 + @ 提到的人 + 消息里聊到的人 + 话题相关**
   （"聊到谁就想起谁"）——**跨天记得住人**（不受 7 天消息滚动与 12 条上下文窗口限制）。
   `/memory`（管理员）查看统计；`/memory extract` 立即提炼。`MEMORY_ENABLED=0` 可关。
+- **情绪状态（情绪系统）**：它有一个随互动缓慢变化的**心情**（平静/开心/得意/无语/委屈/恼火/疲惫/好奇）——
+  后台每 10 分钟综合群里互动更新一次，随时间衰减回平静；回复自然带上（被问到会直说）。
+  **发图时综合"心情 × 话题 × 对话内容"**挑图（图库清单会一并提示给模型）。
+  `/mood`（管理员）查看；`/mood set 得意 0.9 被夸了` 手动设置；`/mood update` 立即整理。`MOOD_ENABLED=0` 可关。
 - **限频**：同一人同一群 5 秒内只能触发一次聊天/搜索。
 - **回退链**：主选失败自动尝试下一个后端，回复末尾可用 `LLM_SHOW_PROVIDER=1` 显示 `[via xxx]`。
 - **Token 控制**：每次 @ 是单轮请求（附最近群聊背景，见上；工具调用各轮也计入预算）。
@@ -168,16 +174,18 @@ D:\agent-workspace\qqbot\
   图片识别全链路（下载→去重→云 vision→回填：测试图读出"苹果数量=42"；真实群表情包识别+回填）✔；
   句中 @ 昵称渲染、回复自身记录入上下文 ✔；单测 56 passed。
 - **表达层·表情包回应（2026-10-03）**：send_sticker 工具上线（LLM 按需调用→图库语义匹配→发图→记账）；
-  实测探针："来张'得意'的表情包" → 发出群里收集的女仆图 + "发了，够得意了吧哈哈" ✔；单测 81 passed。
+  实测探针："来张'得意'的表情包" → 发出群里收集的女仆图 + "发了，够得意了吧哈哈" ✔；单测 87 passed。
 - **图片管道加固（2026-10-03）**：取图改为 **NapCat 本地缓存优先**（`get_image` API），修掉 CDN 链接过期导致的静默失败；
   补识别 2 张历史图（含 1.3MB 动图）；真机发图实测通过（`file:///` 路径，retcode 0）。
 - **自然配图（2026-10-03）**：回复时按对话情绪主动配图（系统提示 + 同义扩展 + 频率自控）；
-  实测"今天也太无语了…裂开了" → 主动发出"被生活拿捏"虎斑猫图 + "先给你配个图…" ✔；单测 81 passed。
-- **引用回复（表达层，2026-10-03）**：聊天回复带引用段（引用触发消息）；命令回复不引用；探针 + 真机实测 ✓；单测 81 passed。
+  实测"今天也太无语了…裂开了" → 主动发出"被生活拿捏"虎斑猫图 + "先给你配个图…" ✔；单测 87 passed。
+- **引用回复（表达层，2026-10-03）**：聊天回复带引用段（引用触发消息）；命令回复不引用；探针 + 真机实测 ✓；单测 87 passed。
 - **决策层·主动接话（2026-10-03）**：不@也接话（预筛+概率门+LLM 判断+静默复用聊天流程）；
-  实测"dd19 在吗，出来冒个泡" → 判定"接"→"在的在的，冒泡了🫧 有啥事儿你说"（带引用）✔；冷却防刷 ✔；单测 81 passed。
+  实测"dd19 在吗，出来冒个泡" → 判定"接"→"在的在的，冒泡了🫧 有啥事儿你说"（带引用）✔；冷却防刷 ✔；单测 87 passed。
 - **记忆系统（2026-10-03）**：长期记忆提炼（增量/去重/上限）+ 回复自动注入 + 后台循环 + /memory 命令；
-  实测：事实挤出上下文窗口后仍被记住并答出（"蓝色"）✔；单测 81 passed。
-- **记忆检索升级（2026-10-03）**：多路检索（本人/@提及/名字出现/话题相关）；实测 @提及→"73 啊，这个我记得"、名字→"蓝色…" ✔；单测 81 passed。
+  实测：事实挤出上下文窗口后仍被记住并答出（"蓝色"）✔；单测 87 passed。
+- **记忆检索升级（2026-10-03）**：多路检索（本人/@提及/名字出现/话题相关）；实测 @提及→"73 啊，这个我记得"、名字→"蓝色…" ✔；单测 87 passed。
+- **情绪状态系统（2026-10-03）**：心情随互动演变+半衰期衰减，回复自然带上；发图综合"心情×话题×内容"
+  （图库清单喂给模型）；实测"心情怎么样？"→ 发出得意女仆图 + "这波得意稳了 😎" ✔；单测 87 passed。
 - 未做/待办：本机 llama（local 后端）实机测试（需先启动 start-qwen38.cmd 后 `/model test local`）；
   手机访问 6099 的负测试（WebUI 已限 127.0.0.1）；48 小时风控观察。

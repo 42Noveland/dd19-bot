@@ -161,6 +161,8 @@ class Config:
     memory_enabled: bool = True
     memory_batch: int = 30
     memory_tick: int = 120
+    mood_enabled: bool = True
+    mood_tick: int = 600
     providers: dict[str, Provider] = field(default_factory=dict)
 
 
@@ -228,6 +230,8 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         memory_enabled=_is_on(env, "MEMORY_ENABLED", "1"),
         memory_batch=int(float(env.get("MEMORY_BATCH", "30"))),
         memory_tick=int(float(env.get("MEMORY_TICK", "120"))),
+        mood_enabled=_is_on(env, "MOOD_ENABLED", "1"),
+        mood_tick=int(float(env.get("MOOD_TICK", "600"))),
         providers=providers,
     )
 

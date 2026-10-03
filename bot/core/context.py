@@ -83,6 +83,13 @@ def _db() -> sqlite3.Connection:
                 last_row_id INTEGER NOT NULL DEFAULT 0,
                 updated_ts REAL NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS mood (
+                group_id INTEGER PRIMARY KEY,
+                mood TEXT NOT NULL,
+                intensity REAL NOT NULL,
+                reason TEXT NOT NULL DEFAULT '',
+                updated_ts REAL NOT NULL
+            );
             """
         )
         conn.commit()

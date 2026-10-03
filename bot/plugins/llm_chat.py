@@ -14,7 +14,7 @@ from nonebot.params import CommandArg
 from nonebot.permission import SUPERUSER
 from nonebot.rule import Rule
 
-from core import budget, context, llm, memory, search, stickers
+from core import budget, context, llm, memory, mood, search, stickers
 from core.config import get_config, normalize_provider_name
 from core.gate import is_allowed_group, render_message_text, should_reply_plain, strip_text_mention
 from plugins._shared import resolve_at_names, sender_name
@@ -181,16 +181,29 @@ async def chat_flow(
         prompt = f"{mem_block}\n\n{text}"
     extra_tools = None
     tool_handler = None
-    extra_system = extra_note
+    blocks: list[str] = []
+    if cfg.mood_enabled:
+        try:
+            mood_block = mood.for_prompt(event.group_id)
+            if mood_block:
+                blocks.append(mood_block)
+        except Exception:  # noqa: BLE001 —— 心情异常不影响聊天
+            pass
     if cfg.sticker_enabled:
         try:
             if context.sticker_count() > 0:
                 extra_tools = [stickers.tool_spec()]
                 tool_handler = _make_sticker_handler(bot, event)
                 hint = stickers.chat_hint()
-                extra_system = f"{hint}\n\n{extra_note}" if extra_note else hint
+                lib = stickers.library_summary(limit=12)
+                if lib:
+                    hint = f"{hint}\n图库现有（挑 query 时参考）：{lib}"
+                blocks.append(hint)
         except Exception:  # noqa: BLE001 —— 贴图库异常不影响聊天
-            extra_tools, tool_handler, extra_system = None, None, extra_note
+            extra_tools, tool_handler = None, None
+    if extra_note:
+        blocks.append(extra_note)
+    extra_system = "\n\n".join(blocks)
     try:
         reply = await llm.chat(
             prompt,

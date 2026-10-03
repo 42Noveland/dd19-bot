@@ -82,3 +82,14 @@ def test_pick_mood_synonym(tmp_path):
 def test_chat_hint_mentions_cadence():
     hint = stickers.chat_hint()
     assert "send_sticker" in hint and "不用等" in hint
+
+
+def test_library_summary(tmp_path):
+    context.reset(tmp_path / "ctx.db")
+    stickers.reset()
+    _mk(tmp_path, "a.jpg", "这是一张黑猫歪头震惊的表情包")
+    _mk(tmp_path, "b.jpg", "一只虎斑猫被捏住生无可恋")
+    out = stickers.library_summary()
+    assert "黑猫歪头震惊" in out and out.startswith("1.")
+    context.reset(tmp_path / "ctx2.db")
+    assert stickers.library_summary() == ""
