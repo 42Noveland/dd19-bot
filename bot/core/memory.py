@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 
 from loguru import logger as _log  # noqa: F401 —— 保留给调用方日志风格对齐
@@ -163,28 +164,106 @@ async def extract_group(group_id: int, cfg: Config) -> tuple[int, int]:
     return len(batch), added
 
 
-def for_prompt(group_id: int, user_id: int, limit_user: int = 8, limit_group: int = 6) -> str:
-    """回复时注入的记忆块（可空字符串）。"""
+def _keywords(text: str) -> set[str]:
+    """CJK bigram + ASCII 词（与贴图库同款匹配方式；用于话题相关性打分）。"""
+    grams: set[str] = set()
+    for run in re.findall(r"[\u4e00-\u9fff]+", text):
+        for i in range(len(run) - 1):
+            grams.add(run[i : i + 2])
+    for word in re.findall(r"[A-Za-z0-9]+", text):
+        grams.add(word.lower())
+    return grams
+
+
+def _name_tokens(name: str) -> list[str]:
+    """名字的匹配碎片：全名 + 按分隔符拆出的 ≥2 字符片段（"老王.13900000000" → ["老王", …]）。"""
+    name = (name or "").strip()
+    tokens: list[str] = []
+    if len(name) >= 2:
+        tokens.append(name)
+    for part in re.split(r"[.\-_\s·,，]+", name):
+        part = part.strip()
+        if len(part) >= 2 and part != name:
+            tokens.append(part)
+    return tokens
+
+
+def for_prompt(
+    group_id: int,
+    user_id: int,
+    *,
+    extra_user_ids: list[int] | None = None,
+    query_text: str = "",
+    limit_user: int = 8,
+    limit_other: int = 5,
+    limit_related: int = 3,
+    limit_group: int = 6,
+) -> str:
+    """回复时注入的记忆块（可空字符串）。多路检索：
+
+    - 说话人本人的事实（limit_user 条）
+    - @ 到的人 + 消息里出现名字的人（每人 limit_other 条，合计最多 3 人）
+    - 与消息话题相关的记忆（bigram 重叠 ≥2，limit_related 条）
+    - 群事件（limit_group 条）
+    """
     gid, uid = int(group_id), int(user_id)
     with context._lock:
         conn = context._db()
-        urows = conn.execute(
-            "SELECT name, text FROM memories WHERE group_id=? AND user_id=? ORDER BY updated_ts DESC LIMIT ?",
-            (gid, uid, int(limit_user)),
+        all_rows = conn.execute(
+            "SELECT user_id, name, text FROM memories WHERE group_id=? ORDER BY updated_ts DESC",
+            (gid,),
         ).fetchall()
-        grows = conn.execute(
-            "SELECT text FROM memories WHERE group_id=? AND user_id=0 ORDER BY updated_ts DESC LIMIT ?",
-            (gid, int(limit_group)),
-        ).fetchall()
-    parts: list[str] = []
-    if urows:
-        name = str(urows[0]["name"] or "TA")
-        parts.append("关于 " + name + "：" + "；".join(str(r["text"]) for r in urows))
-    if grows:
-        parts.append("群里的事：" + "；".join(str(r["text"]) for r in grows))
-    if not parts:
+    people: list[tuple[int, str]] = [(uid, "")]
+    seen_ids: set[int] = {uid}
+    for x in extra_user_ids or []:
+        xi = int(x)
+        if xi and xi != uid and xi not in seen_ids and len(people) < 3:
+            seen_ids.add(xi)
+            people.append((xi, ""))
+    if query_text and len(people) < 3:
+        for r in all_rows:
+            if len(people) >= 3:
+                break
+            r_uid = int(r["user_id"] or 0)
+            r_name = str(r["name"] or "")
+            if r_uid == 0 or r_uid in seen_ids:
+                continue
+            if any(tok in query_text for tok in _name_tokens(r_name)):
+                seen_ids.add(r_uid)
+                people.append((r_uid, r_name))
+    used: set[str] = set()
+    sections: list[str] = []
+    for p_uid, p_name in people:
+        facts = [r for r in all_rows if int(r["user_id"] or 0) == p_uid][: (limit_user if p_uid == uid else limit_other)]
+        if not facts:
+            continue
+        name = p_name or str(facts[0]["name"] or "TA")
+        texts = [str(r["text"]) for r in facts]
+        used.update(texts)
+        sections.append(f"关于 {name}：" + "；".join(texts))
+    grows = [r for r in all_rows if int(r["user_id"] or 0) == 0][:limit_group]
+    gtexts = [str(r["text"]) for r in grows]
+    used.update(gtexts)
+    if query_text and limit_related > 0:
+        q = _keywords(query_text)
+        scored: list[tuple[int, str]] = []
+        for r in all_rows:
+            txt = str(r["text"] or "")
+            if not txt or txt in used:
+                continue
+            score = len(q & _keywords(txt))
+            if score >= 2:
+                nm = str(r["name"] or "").strip()
+                scored.append((score, (f"{nm}：" if int(r["user_id"] or 0) != 0 and nm else "") + txt))
+        scored.sort(key=lambda t: -t[0])
+        rel = [item for _, item in scored[:limit_related]]
+        if rel:
+            sections.append("可能相关：" + "；".join(rel))
+    if gtexts:
+        sections.append("群里的事：" + "；".join(gtexts))
+    if not sections:
         return ""
-    return "【你记得的事（供参考；别生硬复述，也别显得像在翻档案）】\n" + "\n".join(parts)
+    return "【你记得的事（供参考；别生硬复述，也别显得像在翻档案）】\n" + "\n".join(sections)
 
 
 def stats_for(group_id: int) -> dict:

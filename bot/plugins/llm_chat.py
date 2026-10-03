@@ -155,7 +155,15 @@ async def chat_flow(
     mem_block = ""
     if cfg.memory_enabled:
         try:
-            mem_block = memory.for_prompt(event.group_id, event.user_id)
+            mentioned: list[int] = []
+            for seg in event.get_message():
+                if seg.type == "at":
+                    qq = str(seg.data.get("qq") or "")
+                    if qq.isdigit() and qq != str(event.self_id) and int(qq) not in mentioned:
+                        mentioned.append(int(qq))
+            mem_block = memory.for_prompt(
+                event.group_id, event.user_id, extra_user_ids=mentioned, query_text=text
+            )
         except Exception:  # noqa: BLE001 —— 记忆异常不影响聊天
             mem_block = ""
     prompt = text
