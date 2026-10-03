@@ -24,8 +24,9 @@ D:\agent-workspace\qqbot\
 
 1. **NapCat**：双击 `napcat\NapCat.Shell.Node\napcat.bat`（等价 `node.exe ./index.js`），
    等日志出现 `Worker进程已登录成功`（一般自动快速登录，无需扫码）。
-2. **bot**：双击 `bot\start-bot.cmd`（保持窗口开着，CTRL+C 停止）。
-   日志出现 `Bot 123456789 connected` 即接通。
+2. **bot**：双击 `bot\start-bot.cmd`（保持窗口开着；若提示端口 8081 已被占用，
+   按任意键 = 结束旧实例并一键重启）。
+   日志出现 `Bot 123456789 connected` 即接通（日志同时按天存档到 `bot\logs\bot-YYYY-MM-DD.log`）。
 3. （可选）**本机模型**：`D:\agent-workspace\llmtest\start-qwen38.cmd`（:8080）；
    启动后 `/model local` 切到本机模型（免费、数据不出本机）。
 

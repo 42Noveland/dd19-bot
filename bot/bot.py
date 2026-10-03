@@ -14,6 +14,18 @@ _BASE = Path(__file__).resolve().parent
 # 从 bot/.env 读取配置（绝对路径，避免受启动方式影响）
 nonebot.init(_env_file=str(_BASE / ".env"))
 
+# 文件日志：不论以何种方式启动（双击 start-bot.cmd / 命令行），
+# 日志都追加到 logs/bot-YYYY-MM-DD.log（按天分割，保留 7 天）
+from nonebot.log import logger as _nb_logger  # noqa: E402
+
+(_BASE / "logs").mkdir(exist_ok=True)
+_nb_logger.add(
+    str(_BASE / "logs" / "bot-{time:YYYY-MM-DD}.log"),
+    rotation="00:00",
+    retention=7,
+    encoding="utf-8",
+)
+
 driver = nonebot.get_driver()
 driver.register_adapter(OneBotV11Adapter)
 

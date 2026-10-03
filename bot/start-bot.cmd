@@ -1,12 +1,38 @@
 @echo off
-rem å¯åŠ¨ NoneBot æœºå™¨äººï¼ˆåŒå‡»è¿è¡Œï¼›ä¿æŒçª—å£å¼€ç€ï¼ŒCTRL+C åœæ­¢ï¼‰
+setlocal
+title dd19 »úÆ÷ÈË
 cd /d %~dp0
-if not exist .venv\Scripts\python.exe (
-  echo [é”™è¯¯] æœªæ‰¾åˆ° .venvï¼Œå…ˆæ‰§è¡Œ:
+
+rem ================================================
+rem  dd19 QQ »úÆ÷ÈË Ò»¼üÆô¶¯£¨Ë«»÷±¾ÎÄ¼þÔËÐÐ£©
+rem  ±£³Ö±¾´°¿Ú¿ª×Å£»CTRL+C »ò¹Ø±Õ´°¿Ú = Í£Ö¹»úÆ÷ÈË
+rem ================================================
+
+rem --- 1) ¼ì²â¶Ë¿ÚÕ¼ÓÃ£º»úÆ÷ÈËÒÑÔÚÔËÐÐÊ±µÄ´¦Àí ---
+netstat -ano | findstr /C:"127.0.0.1:8081" | findstr "LISTENING" >nul 2>nul
+if %errorlevel%==0 (
+  echo [ÌáÊ¾] ¼ì²âµ½¶Ë¿Ú 8081 ±»Õ¼ÓÃ£º»úÆ÷ÈË¿ÉÄÜÒÑ¾­ÔÚÔËÐÐ¡£
+  echo        ÎóÆô¶¯µÄ»°£¬Ö±½Ó¹Øµô±¾´°¿Ú¼´¿É¡£
+  echo        ÒªÖØÆôµÄ»°£º°´ÈÎÒâ¼ü = ½áÊø¾ÉÊµÀý²¢Æô¶¯ÐÂµÄ¡£
+  pause >nul
+  for /f "tokens=5" %%a in ('netstat -ano ^| findstr /C:"127.0.0.1:8081" ^| findstr "LISTENING"') do taskkill /F /PID %%a >nul 2>nul
+  ping 127.0.0.1 -n 2 >nul
+  echo [OK] ¾ÉÊµÀýÒÑ½áÊø£¬Æô¶¯ÐÂÊµÀý...
+)
+
+rem --- 2) ÐéÄâ»·¾³¼ì²é ---
+if not exist ".venv\Scripts\python.exe" (
+  echo [´íÎó] Î´ÕÒµ½ .venv ÐéÄâ»·¾³£¬ÇëÏÈÖ´ÐÐ£º
   echo   py -3 -m venv .venv
   echo   .venv\Scripts\python.exe -m pip install -r requirements.txt
   pause
   exit /b 1
 )
+
+rem --- 3) Æô¶¯ ---
+echo [Æô¶¯] bot.py ÔËÐÐÖÐ£¨±¾´°¿Ú±£³Ö¿ª×Å£¬CTRL+C Í£Ö¹£©...
 .venv\Scripts\python.exe bot.py
-pause
+
+echo.
+echo [ÒÑÍË³ö] »úÆ÷ÈË½ø³Ì½áÊøÁË£¬ÉÏÃæÊÇ×îºóµÄÈÕÖ¾¡£
+pause >nul
