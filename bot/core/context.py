@@ -90,6 +90,11 @@ def _db() -> sqlite3.Connection:
                 reason TEXT NOT NULL DEFAULT '',
                 updated_ts REAL NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS personas (
+                group_id INTEGER PRIMARY KEY,
+                persona TEXT NOT NULL,
+                updated_ts REAL NOT NULL
+            );
             """
         )
         conn.commit()

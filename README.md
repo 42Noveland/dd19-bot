@@ -40,7 +40,7 @@ D:\agent-workspace\qqbot\
 | 项目 | 命令/位置 | 期望 |
 |---|---|---|
 | 端口存活 | 浏览器开 http://127.0.0.1:8081/ | 返回 404 = 正常 |
-| 单元测试 | `cd bot && .venv\Scripts\python.exe -m pytest -q tests` | `87 passed` |
+| 单元测试 | `cd bot && .venv\Scripts\python.exe -m pytest -q tests` | `90 passed` |
 | 感知层探针 | bot 运行时 `.venv\Scripts\python.exe tests\e2e\probe_context_vision.py [图片URL]` | 记忆/图片均 ✓ |
 | @ 解析探针 | `.venv\Scripts\python.exe tests\e2e\probe_mention_parse.py` | 4 种 @ 形态正常 |
 | 表情包探针 | `.venv\Scripts\python.exe tests\e2e\probe_sticker.py` | 收到图片发送 |
@@ -50,6 +50,7 @@ D:\agent-workspace\qqbot\
 | 记忆探针 | `.venv\Scripts\python.exe tests\e2e\probe_memory.py` | 提炼+注入（回答含"蓝色"） |
 | 记忆检索探针 | `.venv\Scripts\python.exe tests\e2e\probe_memory_recall.py mention\|name` | 两条路径命中（73 / 蓝色；跑前间隔 ≥6s 防限频） |
 | 情绪探针 | `.venv\Scripts\python.exe tests\e2e\probe_mood.py` | 设置→注入（回答含"得意"） |
+| 人设切换探针 | `.venv\Scripts\python.exe tests\e2e\probe_persona_switch.py` | 切换/状态/回复/恢复四项 ✓ |
 | 全链路自测 | bot 运行时 `bot\.venv\Scripts\python.exe bot\tests\e2e\fake_napcat.py` | `ALL PASS` |
 | NapCat 面板 | http://127.0.0.1:6099/webui（token 见 `napcat\NapCat.Shell.Node\napcat\config\webui.json`） | 仅本机可访问 |
 - NapCat HTTP API：127.0.0.1:3000（仅本机，调试/运维用；get_image、send_group_msg 等）
@@ -65,7 +66,7 @@ D:\agent-workspace\qqbot\
 | LLM_PROVIDER | opencode_go | 主选后端（deepseek-v4.1-flash） |
 | LLM_FALLBACKS | （空） | 回退链；留空=只用主选。可填 local 让本机模型兜底 |
 | LLM_REPLY_MODE | mention | 默认：@我/引用回复才聊；all=所有消息都聊；command=仅 /chat |
-| LLM_PERSONA_FILE | persona.md | 人设文件（改此值+重启即可切换；现有 persona.md=十九、persona-sparkle.md）；也可用 LLM_SYSTEM_PROMPT 单行直写（优先级更高） |
+| LLM_PERSONA_FILE | persona.md | **默认人设**文件（每群可用 /persona 覆盖；现有 persona.md=十九、persona-sparkle.md、persona-elena.md）；也可用 LLM_SYSTEM_PROMPT 单行直写（优先级更高） |
 | LLM_MAX_TOKENS | 100000 | 单次会话 token 上限（输入估算+输出上限合计；超长输入自动截断） |
 | LLM_DAILY_TOKEN_LIMIT | 10000000 | 单日 token 上限（跨后端合计；北京时间每日重置，存 bot/logs/token-usage.json） |
 | LLM_QUOTA_REPLY | 白饭吃完了QAQ | 额度用完后的固定回复 |
@@ -114,6 +115,8 @@ D:\agent-workspace\qqbot\
   后台每 10 分钟综合群里互动更新一次，随时间衰减回平静；回复自然带上（被问到会直说）。
   **发图时综合"心情 × 话题 × 对话内容"**挑图（图库清单会一并提示给模型）。
   `/mood`（管理员）查看；`/mood set 得意 0.9 被夸了` 手动设置；`/mood update` 立即整理。`MOOD_ENABLED=0` 可关。
+- **按群人设（/persona）**：每个群可**独立选择人设、随时切换**——管理员在群里发 `/persona <名字>` 立即生效（无需重启）；
+  `/persona default` 恢复默认（十九）；`/persona` 查看当前与可用列表。人设文件 = `bot/persona*.md`（改文件即热更新）。
 - **限频**：同一人同一群 5 秒内只能触发一次聊天/搜索。
 - **回退链**：主选失败自动尝试下一个后端，回复末尾可用 `LLM_SHOW_PROVIDER=1` 显示 `[via xxx]`。
 - **Token 控制**：每次 @ 是单轮请求（附最近群聊背景，见上；工具调用各轮也计入预算）。
@@ -176,18 +179,20 @@ D:\agent-workspace\qqbot\
   图片识别全链路（下载→去重→云 vision→回填：测试图读出"苹果数量=42"；真实群表情包识别+回填）✔；
   句中 @ 昵称渲染、回复自身记录入上下文 ✔；单测 56 passed。
 - **表达层·表情包回应（2026-10-03）**：send_sticker 工具上线（LLM 按需调用→图库语义匹配→发图→记账）；
-  实测探针："来张'得意'的表情包" → 发出群里收集的女仆图 + "发了，够得意了吧哈哈" ✔；单测 87 passed。
+  实测探针："来张'得意'的表情包" → 发出群里收集的女仆图 + "发了，够得意了吧哈哈" ✔；单测 90 passed。
 - **图片管道加固（2026-10-03）**：取图改为 **NapCat 本地缓存优先**（`get_image` API），修掉 CDN 链接过期导致的静默失败；
   补识别 2 张历史图（含 1.3MB 动图）；真机发图实测通过（`file:///` 路径，retcode 0）。
 - **自然配图（2026-10-03）**：回复时按对话情绪主动配图（系统提示 + 同义扩展 + 频率自控）；
-  实测"今天也太无语了…裂开了" → 主动发出"被生活拿捏"虎斑猫图 + "先给你配个图…" ✔；单测 87 passed。
-- **引用回复（表达层，2026-10-03）**：聊天回复带引用段（引用触发消息）；命令回复不引用；探针 + 真机实测 ✓；单测 87 passed。
+  实测"今天也太无语了…裂开了" → 主动发出"被生活拿捏"虎斑猫图 + "先给你配个图…" ✔；单测 90 passed。
+- **引用回复（表达层，2026-10-03）**：聊天回复带引用段（引用触发消息）；命令回复不引用；探针 + 真机实测 ✓；单测 90 passed。
 - **决策层·主动接话（2026-10-03）**：不@也接话（预筛+概率门+LLM 判断+静默复用聊天流程）；
-  实测"dd19 在吗，出来冒个泡" → 判定"接"→"在的在的，冒泡了🫧 有啥事儿你说"（带引用）✔；冷却防刷 ✔；单测 87 passed。
+  实测"dd19 在吗，出来冒个泡" → 判定"接"→"在的在的，冒泡了🫧 有啥事儿你说"（带引用）✔；冷却防刷 ✔；单测 90 passed。
 - **记忆系统（2026-10-03）**：长期记忆提炼（增量/去重/上限）+ 回复自动注入 + 后台循环 + /memory 命令；
-  实测：事实挤出上下文窗口后仍被记住并答出（"蓝色"）✔；单测 87 passed。
-- **记忆检索升级（2026-10-03）**：多路检索（本人/@提及/名字出现/话题相关）；实测 @提及→"73 啊，这个我记得"、名字→"蓝色…" ✔；单测 87 passed。
+  实测：事实挤出上下文窗口后仍被记住并答出（"蓝色"）✔；单测 90 passed。
+- **记忆检索升级（2026-10-03）**：多路检索（本人/@提及/名字出现/话题相关）；实测 @提及→"73 啊，这个我记得"、名字→"蓝色…" ✔；单测 90 passed。
 - **情绪状态系统（2026-10-03）**：心情随互动演变+半衰期衰减，回复自然带上；发图综合"心情×话题×内容"
-  （图库清单喂给模型）；实测"心情怎么样？"→ 发出得意女仆图 + "这波得意稳了 😎" ✔；单测 87 passed。
+  （图库清单喂给模型）；实测"心情怎么样？"→ 发出得意女仆图 + "这波得意稳了 😎" ✔；单测 90 passed。
+- **按群人设 + 动态切换（2026-10-03）**：每群独立人设（DB 持久、文件热更新）+ `/persona` 命令（管理员，立即生效）；
+  实测切换 Elena → "嗯，你好呀……我叫 Elena…"、恢复默认 ✔；单测 90 passed。
 - 未做/待办：本机 llama（local 后端）实机测试（需先启动 start-qwen38.cmd 后 `/model test local`）；
   手机访问 6099 的负测试（WebUI 已限 127.0.0.1）；48 小时风控观察。

@@ -20,7 +20,7 @@ from nonebot import on_message
 from nonebot.adapters.onebot.v11 import Bot, Event, GroupMessageEvent
 from nonebot.rule import Rule
 
-from core import context, llm
+from core import context, llm, personas
 from core.config import get_config
 from core.gate import is_allowed_group, mentions_name, parse_judge_verdict, render_message_text
 from plugins._shared import resolve_at_names, sender_name
@@ -30,7 +30,7 @@ _last_auto: dict[int, float] = {}
 _inflight: set[int] = set()
 
 _JUDGE_RULES = (
-    "【任务】你是群聊成员「十九」（朋友风格的聊天机器人）。下面给你群聊最近的记录和一条新消息。"
+    "【任务】你是群聊成员「{name}」。下面给你群聊最近的记录和一条新消息。"
     "判断：这条新消息，你要不要主动接一句话？\n"
     "接话原则：\n"
     "- 大多数消息不用接。只有接话显得自然、有趣、有帮助，或有人在说你/问你/聊到你熟悉的话题时，才接。\n"
@@ -52,9 +52,13 @@ async def _allowed(event: Event) -> bool:
 auto_reply = on_message(rule=Rule(_allowed), priority=48, block=False)
 
 
-def _bot_names(cfg) -> list[str]:
+def _bot_names(cfg, group_id: int) -> list[str]:
     names: list[str] = []
-    for n in [str(cfg.bot_name or "").strip(), "dd19", "机器人"]:
+    try:
+        pname = personas.name_for(group_id)
+    except Exception:  # noqa: BLE001
+        pname = ""
+    for n in [pname, str(cfg.bot_name or "").strip(), "dd19", "机器人"]:
         if n and n not in names:
             names.append(n)
     return names
@@ -86,7 +90,7 @@ async def _consider(bot: Bot, event: GroupMessageEvent) -> None:
         return
     if _bot_spoke_recently(gid, str(bot.self_id)):
         return
-    if not mentions_name(probe, _bot_names(cfg)) and random.random() >= cfg.auto_reply_chance:
+    if not mentions_name(probe, _bot_names(cfg, gid)) and random.random() >= cfg.auto_reply_chance:
         return
     task = asyncio.create_task(_judge_and_maybe_reply(bot, event))
     _tasks.add(task)
@@ -108,11 +112,13 @@ async def _judge_and_maybe_reply(bot: Bot, event: GroupMessageEvent) -> None:
             if str(row.get("message_id")) != str(event.message_id)
         ][-cfg.llm_context_messages :]
         material = context.format_context_prompt(history, sender_name(event), text, addressed=False)
+        pname, ptext = personas.resolve(gid)
         verdict = await llm.chat_once(
             material,
             cfg.providers[llm.current_default()],
             session_key=f"qqbot-judge-{gid}",
-            extra_system=_JUDGE_RULES,
+            extra_system=_JUDGE_RULES.replace("{name}", pname),
+            system_prompt_override=ptext,
         )
         raw = (verdict.text or "").strip()
         ok = parse_judge_verdict(raw)

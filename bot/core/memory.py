@@ -15,14 +15,14 @@ import time
 
 from loguru import logger as _log  # noqa: F401 —— 保留给调用方日志风格对齐
 
-from . import context, llm
+from . import context, llm, personas
 from .config import Config
 
 MAX_PER_USER = 40   # 每群每人最多保留的条数
 MAX_PER_GROUP = 80  # 每群群事件最多保留的条数
 
 _EXTRACT_RULES = (
-    "【任务】你是群聊成员「十九」。下面给你一批群聊记录（含图片描述）。"
+    "【任务】你是群聊成员「{name}」。下面给你一批群聊记录（含图片描述）。"
     "从中提炼**值得长期记住**的信息，只记两类：\n"
     '1) 关于某个成员的事实（偏好、身份、经历、关系、习惯）——{"kind":"user","name":"昵称","fact":"简短事实"}\n'
     '2) 群里发生过/约定过的事（事件、梗、承诺）——{"kind":"group","fact":"简短描述"}\n'
@@ -143,11 +143,13 @@ async def extract_group(group_id: int, cfg: Config) -> tuple[int, int]:
         if str(r.get("text") or "").strip()
     ]
     material = "【群聊记录（旧→新）】\n" + "\n".join(lines)
+    pname, ptext = personas.resolve(gid)
     completion = await llm.chat_once(
         material,
         cfg.providers[llm.current_default()],
         session_key=f"qqbot-mem-{gid}",
-        extra_system=_EXTRACT_RULES,
+        extra_system=_EXTRACT_RULES.replace("{name}", pname),
+        system_prompt_override=ptext,
     )
     items = parse_extraction(completion.text or "")
     added = 0

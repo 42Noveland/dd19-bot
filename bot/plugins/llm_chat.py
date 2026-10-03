@@ -14,7 +14,7 @@ from nonebot.params import CommandArg
 from nonebot.permission import SUPERUSER
 from nonebot.rule import Rule
 
-from core import budget, context, llm, memory, mood, search, stickers
+from core import budget, context, llm, memory, mood, personas, search, stickers
 from core.config import get_config, normalize_provider_name
 from core.gate import is_allowed_group, render_message_text, should_reply_plain, strip_text_mention
 from plugins._shared import resolve_at_names, sender_name
@@ -28,6 +28,7 @@ async def _allowed(event: Event) -> bool:
 chat_all = on_message(rule=Rule(_allowed), priority=50, block=False)
 chat = on_command("chat", rule=Rule(_allowed), priority=20, block=True)
 model_cmd = on_command("model", rule=Rule(_allowed), permission=SUPERUSER, priority=5, block=True)
+persona_cmd = on_command("persona", rule=Rule(_allowed), permission=SUPERUSER, priority=5, block=True)
 search_cmd = on_command("search", rule=Rule(_allowed), priority=20, block=True)
 usage_cmd = on_command("usage", rule=Rule(_allowed), aliases={"额度"}, priority=20, block=True)
 
@@ -106,7 +107,7 @@ def _make_sticker_handler(bot: Bot, event: GroupMessageEvent):
         caption = str(row["caption"] or "")[:60]
         try:
             context.record_message(
-                event.group_id, int(event.self_id), get_config().bot_name, f"[表情包: {caption}]"
+                event.group_id, int(event.self_id), personas.name_for(event.group_id), f"[表情包: {caption}]"
             )
         except Exception:  # noqa: BLE001 —— 记录失败不影响发送
             pass
@@ -204,6 +205,7 @@ async def chat_flow(
     if extra_note:
         blocks.append(extra_note)
     extra_system = "\n\n".join(blocks)
+    persona_name, persona_text = personas.resolve(event.group_id)
     try:
         reply = await llm.chat(
             prompt,
@@ -211,6 +213,7 @@ async def chat_flow(
             extra_tools=extra_tools,
             tool_handler=tool_handler,
             extra_system=extra_system,
+            system_prompt_override=persona_text,
         )
     except llm.QuotaExceededError:
         if not quiet_skip:
@@ -222,8 +225,8 @@ async def chat_flow(
         return
     out = _format_reply(reply)
     try:
-        # 记录机器人自己的回复，保持群上下文完整（bot 也是"群友"）
-        context.record_message(event.group_id, int(event.self_id), cfg.bot_name, out)
+        # 记录机器人自己的回复，保持群上下文完整（bot 也是"群友"；记录名=该群人设名）
+        context.record_message(event.group_id, int(event.self_id), persona_name, out)
     except Exception:  # noqa: BLE001 —— 记录失败不影响回复
         pass
     await _send_reply(send, event, out)
@@ -378,3 +381,31 @@ async def _handle_model(args: Message = CommandArg()) -> None:
     provider = cfg.providers[name]
     note = "" if (name == "local" or provider.api_key) else "（注意：该后端还没配 API key）"
     await model_cmd.finish(f"已切换默认模型为 {name}{note}")
+
+
+@persona_cmd.handle()
+async def _handle_persona(event: GroupMessageEvent, args: Message = CommandArg()) -> None:
+    """按群人设切换（仅管理员；立即生效，无需重启）。"""
+    gid = int(event.group_id)
+    parts = args.extract_plain_text().strip().split(maxsplit=1)
+    if parts and parts[0].lower() == "default":
+        personas.clear_group(gid)
+        name, _ = personas.resolve(gid)
+        await persona_cmd.finish(f"已恢复默认人设：{name}（立即生效）")
+        return
+    if parts:
+        item = personas.match(parts[0])
+        if not item:
+            names = " / ".join(p["name"] for p in personas.list_personas())
+            await persona_cmd.finish(f"没找到这个人设。可用：{names}")
+            return
+        personas.set_group(gid, item["stem"])
+        await persona_cmd.finish(f"本群人设已切换为 {item['name']}（立即生效，下一条回复就是新人格）")
+        return
+    name, _ = personas.resolve(gid)
+    stem = personas.get_group_stem(gid)
+    names = " / ".join(p["name"] for p in personas.list_personas())
+    await persona_cmd.finish(
+        f"当前人设：{name}" + ("（本群自定义）" if stem else "（默认）")
+        + f"\n可用：{names}\n用法：/persona <名字> 切换；/persona default 恢复默认"
+    )

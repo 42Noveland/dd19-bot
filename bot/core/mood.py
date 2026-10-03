@@ -11,7 +11,7 @@ import json
 import math
 import time
 
-from . import context, llm
+from . import context, llm, personas
 from .config import Config
 
 MOODS = ("平静", "开心", "得意", "无语", "委屈", "恼火", "疲惫", "好奇")
@@ -20,7 +20,7 @@ MIN_INTENSITY = 0.2  # 低于此值视为回到平静
 _MIN_MESSAGES = 6    # 攒够这么多条新消息才值得整理一次心情
 
 _RULES = (
-    "【任务】你是群聊成员「十九」。根据下面最近群里的互动，更新你此刻的心情。\n"
+    "【任务】你是群聊成员「{name}」。根据下面最近群里的互动，更新你此刻的心情。\n"
     "从这些心情里选一个：平静 / 开心 / 得意 / 无语 / 委屈 / 恼火 / 疲惫 / 好奇。\n"
     "考虑：群友怎么对你（夸你/怼你/逗你/冷落你）、聊了什么话题、你参与得怎么样。"
     "心情可以被新互动改变，也可以延续；没什么特别的事就慢慢回到平静。\n"
@@ -126,11 +126,13 @@ async def update_group(group_id: int, cfg: Config, *, now: float | None = None) 
         if str(r.get("text") or "").strip()
     ]
     material = current + "\n【最近群里的互动（旧→新）】\n" + "\n".join(lines)
+    pname, ptext = personas.resolve(gid)
     completion = await llm.chat_once(
         material,
         cfg.providers[llm.current_default()],
         session_key=f"qqbot-mood-{gid}",
-        extra_system=_RULES,
+        extra_system=_RULES.replace("{name}", pname),
+        system_prompt_override=ptext,
     )
     parsed = parse_mood_update(completion.text or "")
     if not parsed:

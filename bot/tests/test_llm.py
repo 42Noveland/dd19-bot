@@ -449,3 +449,26 @@ def test_extra_system_appended(monkeypatch):
     sys_msg = requests[0]["messages"][0]
     assert sys_msg["role"] == "system"
     assert "【测试提示】配图引导" in sys_msg["content"]
+
+
+def test_system_prompt_override(monkeypatch):
+    """system_prompt_override 应替代默认人设（按群人设用）。"""
+    cfg = load_config({"OPENCODE_GO_API_KEY": "ok", "LLM_SYSTEM_PROMPT": "默认人设"})
+    monkeypatch.setattr(core_config, "_config", cfg, raising=False)
+    requests: list[dict] = []
+
+    def h(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        return httpx.Response(200, json={"choices": [{"finish_reason": "stop", "message": {"content": "好"}}]})
+
+    asyncio.run(
+        llm.chat_once(
+            "在吗",
+            cfg.providers["opencode_go"],
+            transport=httpx.MockTransport(h),
+            system_prompt_override="群专属人设",
+        )
+    )
+    content = requests[0]["messages"][0]["content"]
+    assert content.startswith("群专属人设")
+    assert "默认人设" not in content
