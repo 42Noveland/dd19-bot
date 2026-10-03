@@ -1,4 +1,4 @@
-"""群白名单判定 + 默认聊天模式的消息路由判定 + 文本形式提及兼容。"""
+"""群白名单判定 + 默认聊天模式的消息路由判定 + 文本形式提及兼容 + 消息文本渲染（@ 可见性）。"""
 from __future__ import annotations
 
 from .config import Config, get_config
@@ -51,3 +51,27 @@ def strip_text_mention(text: str, aliases: set[str]) -> tuple[str, bool]:
 
 
 _MENTION_SEPS = " \t\u3000，,：:、。!！?？~～"
+
+
+def render_message_text(message, self_id: str, names: dict[str, str] | None = None) -> str:
+    """把群消息渲染成给 LLM 的纯文本（比 extract_plain_text 更完整）：
+
+    - 文本段原样保留；
+    - @ 段渲染为 "@昵称"（names: qq→昵称；缺省用 qq 号；"all" → @全体成员）——
+      适配器的 extract_plain_text 会把 @ 段整个丢掉，导致 "我想问问@某人怎么样"
+      这类句中的 @ 对 LLM 完全不可见；
+    - 开头的连续 @机器人（称呼本身）剥掉，与原有行为一致。
+    """
+    names = names or {}
+    segs = list(message)
+    i = 0
+    while i < len(segs) and segs[i].type == "at" and str(segs[i].data.get("qq", "")) == str(self_id):
+        i += 1
+    parts: list[str] = []
+    for seg in segs[i:]:
+        if seg.type == "text":
+            parts.append(str(seg.data.get("text", "")))
+        elif seg.type == "at":
+            qq = str(seg.data.get("qq", ""))
+            parts.append("@全体成员" if qq == "all" else "@" + names.get(qq, qq))
+    return "".join(parts).strip()

@@ -15,7 +15,7 @@ from nonebot.rule import Rule
 
 from core import budget, llm, search
 from core.config import get_config, normalize_provider_name
-from core.gate import is_allowed_group, should_reply_plain, strip_text_mention
+from core.gate import is_allowed_group, render_message_text, should_reply_plain, strip_text_mention
 
 
 async def _allowed(event: Event) -> bool:
@@ -46,6 +46,31 @@ async def _bot_aliases(bot: Bot) -> set[str]:
             pass
         _MENTION_ALIASES[key] = aliases
     return _MENTION_ALIASES[key]
+
+
+_AT_NAME_CACHE: dict[tuple[int, str], str] = {}
+
+
+async def _resolve_at_names(bot: Bot, group_id: int, message: Message) -> dict[str, str]:
+    """为消息里的 @ 段解析昵称（带缓存；失败退化为 QQ 号）。"""
+    names: dict[str, str] = {}
+    for seg in message:
+        if seg.type != "at":
+            continue
+        qq = str(seg.data.get("qq", ""))
+        if not qq or qq == "all" or qq == str(bot.self_id):
+            continue
+        key = (group_id, qq)
+        if key not in _AT_NAME_CACHE:
+            name = qq
+            try:
+                info = await bot.get_group_member_info(group_id=group_id, user_id=int(qq))
+                name = str(info.get("card") or info.get("nickname") or "").strip() or qq
+            except Exception:  # noqa: BLE001 —— 解析失败不阻塞聊天
+                pass
+            _AT_NAME_CACHE[key] = name
+        names[qq] = _AT_NAME_CACHE[key]
+    return names
 
 
 @event_preprocessor
@@ -101,24 +126,30 @@ async def _reply_chat(matcher, event: GroupMessageEvent, text: str) -> None:
 
 
 @chat_all.handle()
-async def _handle_plain(event: GroupMessageEvent) -> None:
+async def _handle_plain(bot: Bot, event: GroupMessageEvent) -> None:
     cfg = get_config()
-    text = event.get_message().extract_plain_text().strip()
-    if not text:
+    message = event.get_message()
+    # 先做廉价判定（不触发 API）：昵称解析只在"确认要回复"后进行
+    probe = render_message_text(message, str(bot.self_id))
+    if not probe:
         # 只 @ 了机器人却没写内容：给个引导提示（command 模式除外）
         if event.is_tome() and cfg.llm_reply_mode != "command":
             await chat_all.finish("在的～在 @我 后面写上想聊的内容就行")
         return
-    if not should_reply_plain(text, event.is_tome(), cfg.llm_reply_mode):
+    if not should_reply_plain(probe, event.is_tome(), cfg.llm_reply_mode):
         return
+    names = await _resolve_at_names(bot, event.group_id, message)
+    text = render_message_text(message, str(bot.self_id), names)
     await _reply_chat(chat_all, event, text)
 
 
 @chat.handle()
-async def _handle_chat(event: GroupMessageEvent, args: Message = CommandArg()) -> None:
-    text = args.extract_plain_text().strip()
-    if not text:
+async def _handle_chat(bot: Bot, event: GroupMessageEvent, args: Message = CommandArg()) -> None:
+    probe = render_message_text(args, str(bot.self_id))
+    if not probe:
         await chat.finish("用法：/chat 你想说的话")
+    names = await _resolve_at_names(bot, event.group_id, args)
+    text = render_message_text(args, str(bot.self_id), names)
     await _reply_chat(chat, event, text)
 
 

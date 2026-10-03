@@ -1,5 +1,5 @@
 from core.config import Config
-from core.gate import is_allowed_group, should_reply_plain, strip_text_mention
+from core.gate import is_allowed_group, render_message_text, should_reply_plain, strip_text_mention
 
 
 def test_allowed_group_only():
@@ -34,3 +34,35 @@ def test_strip_text_mention():
     assert strip_text_mention("@张三 你好", aliases) == ("@张三 你好", False)
     assert strip_text_mention("你好 @dd19", aliases) == ("你好 @dd19", False)
     assert strip_text_mention("普通消息", aliases) == ("普通消息", False)
+
+
+class _Seg:
+    """轻量段对象（鸭子类型，避免单测里引入 nonebot 适配器）。"""
+
+    def __init__(self, type_: str, data: dict):
+        self.type = type_
+        self.data = data
+
+
+def test_render_message_text_keeps_mid_at_visible():
+    msg = [
+        _Seg("at", {"qq": "123456789"}),
+        _Seg("text", {"text": "我想问问"}),
+        _Seg("at", {"qq": "1234567890"}),
+        _Seg("text", {"text": "是个怎样的人"}),
+    ]
+    assert render_message_text(msg, "123456789", {"1234567890": "老王"}) == "我想问问@老王是个怎样的人"
+    # 无昵称映射时退化为 QQ 号，但 @ 依然可见
+    assert render_message_text(msg, "123456789") == "我想问问@1234567890是个怎样的人"
+
+
+def test_render_message_text_strips_leading_self_at():
+    msg = [_Seg("at", {"qq": "123456789"}), _Seg("text", {"text": " 你好 @dd19"})]
+    assert render_message_text(msg, "123456789") == "你好 @dd19"
+
+
+def test_render_message_text_at_all_and_plain():
+    msg = [_Seg("at", {"qq": "123456789"}), _Seg("text", {"text": "hi "}), _Seg("at", {"qq": "all"})]
+    assert render_message_text(msg, "123456789") == "hi @全体成员"
+    assert render_message_text([_Seg("text", {"text": "普通消息"})], "123456789") == "普通消息"
+    assert render_message_text([_Seg("at", {"qq": "123456789"})], "123456789") == ""
