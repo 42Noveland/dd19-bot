@@ -19,12 +19,14 @@ try:
 except ImportError:  # 兼容旧版 websockets
     from websockets.client import connect as ws_connect
 
+import _probe_env
+
 SELF_ID = 10013  # 假 self_id（重复真实 id 会被适配器 403 拒绝）
 URL = "ws://127.0.0.1:8081/onebot/v11/ws"
 HEADERS = {"X-Self-ID": str(SELF_ID), "X-Client-Role": "Universal"}
-GROUP = 111111111
-ADMIN = 1234567890
-BOT_QQ = 123456789
+GROUP = _probe_env.group()
+ADMIN = _probe_env.admin()
+BOT_QQ = _probe_env.bot_qq()
 
 
 def ev(segs: list, mid: int, uid: int, nickname: str) -> dict:

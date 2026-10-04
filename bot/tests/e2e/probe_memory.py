@@ -18,11 +18,13 @@ try:
 except ImportError:  # 兼容旧版 websockets
     from websockets.client import connect as ws_connect
 
+import _probe_env
+
 SELF_ID = 10009  # 假 self_id（重复真实 id 会被适配器 403 拒绝）
 URL = "ws://127.0.0.1:8081/onebot/v11/ws"
 HEADERS = {"X-Self-ID": str(SELF_ID), "X-Client-Role": "Universal"}
-GROUP = 111111111
-ADMIN = 1234567890
+GROUP = _probe_env.group()
+ADMIN = _probe_env.admin()
 
 FACT = "我最喜欢的颜色是蓝色，以后问我记得答蓝色哈"
 FILLERS = [

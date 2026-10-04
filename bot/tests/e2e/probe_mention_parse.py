@@ -15,9 +15,14 @@ try:
 except ImportError:  # 兼容旧版 websockets
     from websockets.client import connect as ws_connect
 
-SELF_ID = 10002  # 不能用真实 bot 的 123456789：适配器会拒绝重复的 X-Self-ID（握手 403）
+SELF_ID = 10002  # 不能用真实 bot 的 QQ：适配器会拒绝重复的 X-Self-ID（握手 403）
 URL = "ws://127.0.0.1:8081/onebot/v11/ws"
 HEADERS = {"X-Self-ID": str(SELF_ID), "X-Client-Role": "Universal"}
+
+import _probe_env
+
+GROUP = _probe_env.group()
+ADMIN = _probe_env.admin()
 
 
 def ev(group: int, segs: list, mid: int, uid: int) -> dict:
@@ -72,13 +77,13 @@ async def main() -> None:
         ("T4 中间真实@段", [
             {"type": "at", "data": {"qq": str(SELF_ID)}},
             {"type": "text", "data": {"text": "我想问问"}},
-            {"type": "at", "data": {"qq": "1234567890"}},
+            {"type": "at", "data": {"qq": str(ADMIN)}},
             {"type": "text", "data": {"text": "是个怎样的人"}},
         ], 4004, 29904),
     ]
     async with ws_connect(URL, max_size=2**22, additional_headers=HEADERS) as ws:
         for name, segs, mid, uid in tests:
-            await ws.send(json.dumps(ev(111111111, segs, mid, uid)))
+            await ws.send(json.dumps(ev(GROUP, segs, mid, uid)))
             try:
                 reply = await wait_reply(ws)
                 print(f"[{name}] -> {reply[:220]}")

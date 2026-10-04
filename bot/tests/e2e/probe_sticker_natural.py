@@ -13,10 +13,12 @@ try:
 except ImportError:  # 兼容旧版 websockets
     from websockets.client import connect as ws_connect
 
+import _probe_env
+
 SELF_ID = 10005  # 假 self_id（重复真实 id 会被适配器 403 拒绝）
 URL = "ws://127.0.0.1:8081/onebot/v11/ws"
 HEADERS = {"X-Self-ID": str(SELF_ID), "X-Client-Role": "Universal"}
-GROUP = 111111111
+GROUP = _probe_env.group()
 DEFAULT_MSG = "唉今天也太无语了，感觉整个人都裂开了"
 
 
