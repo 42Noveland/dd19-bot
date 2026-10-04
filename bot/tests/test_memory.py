@@ -85,3 +85,10 @@ def test_name_tokens_split():
     assert "老王" in memory._name_tokens("老王.13900000000")
     assert "abc" in memory._name_tokens("abc-13900000001")
     assert memory._name_tokens("") == []
+
+
+def test_extract_rules_anti_pollution():
+    """记忆提炼提示词必须包含防污染规则（借鉴 MaiBot）。"""
+    r = memory._EXTRACT_RULES
+    for key in ("不能当作群友的事实来源", "只记最终版本", "临时状态不等于长期", "不等于认识", "宁可少记"):
+        assert key in r, f"缺防污染规则: {key}"
