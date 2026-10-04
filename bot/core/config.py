@@ -138,6 +138,7 @@ class Config:
     llm_max_tokens: int = 2000
     llm_daily_token_limit: int = 10_000_000
     llm_quota_reply: str = "白饭吃完了QAQ"
+    llm_error_reply: str = "呃，卡了一下……等会儿再聊哈"
     llm_tool_max_rounds: int = 3
     llm_cooldown: float = 5.0
     llm_timeout: float = 180.0
@@ -214,6 +215,8 @@ def load_config(env: Mapping[str, str] | None = None) -> Config:
         llm_max_tokens=int(env.get("LLM_MAX_TOKENS", "2000")),
         llm_daily_token_limit=int(env.get("LLM_DAILY_TOKEN_LIMIT", "10000000")),
         llm_quota_reply=env.get("LLM_QUOTA_REPLY", "白饭吃完了QAQ").strip() or "白饭吃完了QAQ",
+        llm_error_reply=env.get("LLM_ERROR_REPLY", "呃，卡了一下……等会儿再聊哈").strip()
+        or "呃，卡了一下……等会儿再聊哈",
         llm_tool_max_rounds=max(1, int(env.get("LLM_TOOL_MAX_ROUNDS", "3"))),
         llm_cooldown=float(env.get("LLM_COOLDOWN", "5")),
         llm_timeout=float(env.get("LLM_TIMEOUT", "180")),

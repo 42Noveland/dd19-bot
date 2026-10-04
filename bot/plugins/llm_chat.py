@@ -7,6 +7,7 @@ LLM_REPLY_MODE=command 时仅 /chat 指令触发。斜杠开头的消息一律�
 import time
 from pathlib import Path
 
+from loguru import logger as _log
 from nonebot import on_command, on_message
 from nonebot.adapters.onebot.v11 import Bot, Event, GroupMessageEvent, Message, MessageSegment
 from nonebot.message import event_preprocessor
@@ -242,9 +243,10 @@ async def chat_flow(
         if not quiet_skip:
             await _send_reply(send, event, cfg.llm_quota_reply)
         return
-    except Exception as exc:  # noqa: BLE001 —— 所有后端都失败时给用户明确提示
+    except Exception as exc:  # noqa: BLE001 —— 失败给用户一句人话，异常细节只进日志
+        _log.opt(exception=True).warning("chat reply failed [group {}]: {}", event.group_id, exc)
         if not quiet_skip:
-            await _send_reply(send, event, f"AI 调用失败（所有后端）：{exc}")
+            await _send_reply(send, event, cfg.llm_error_reply)
         return
     out = _format_reply(reply)
     try:
@@ -319,8 +321,9 @@ async def _do_search(matcher, event: GroupMessageEvent, query: str) -> None:
             limit=cfg.search_max_results,
             timeout=cfg.search_timeout,
         )
-    except Exception as exc:  # noqa: BLE001
-        await matcher.finish(f"搜索失败了喵…（{type(exc).__name__}）")
+    except Exception as exc:  # noqa: BLE001 —— 细节只进日志，给用户一句人话
+        _log.opt(exception=True).warning("search failed: {}", exc)
+        await matcher.finish("搜索失败了喵…网络好像不太顺，等会儿再试？")
         return
     if not results:
         await matcher.finish("没有搜到相关内容喵…")
