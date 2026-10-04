@@ -16,6 +16,12 @@ from nonebot.permission import SUPERUSER
 from nonebot.rule import Rule
 
 from core import affection, budget, context, jargon, llm, memory, mood, persona_evo, personas, search, stickers, style_pairs, textnorm
+
+# 回复纪律（固定规则，走 extra_system；system 保持稳定、不影响前缀缓存；借鉴 MaiBot）
+_CHAT_RULES = (
+    "【回复习惯】最好一次只对一个话题回复，免得啰嗦、内容太乱；"
+    "不要回复得太有条理——朋友闲聊不是写文章，不用面面俱到。"
+)
 from core.config import get_config, normalize_provider_name
 from core.gate import is_allowed_group, render_message_text, should_reply_plain, strip_text_mention
 from plugins._shared import resolve_at_names, sender_name
@@ -238,6 +244,7 @@ async def chat_flow(
             extra_tools=extra_tools,
             tool_handler=tool_handler,
             dynamic_blocks=dynamic_blocks,
+            extra_system=_CHAT_RULES,
             system_prompt_override=persona_text,
         )
     except llm.QuotaExceededError:
