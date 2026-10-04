@@ -76,3 +76,12 @@ def test_search_failure_is_humanized(tmp_path, monkeypatch):
     out = finished[-1]
     assert "搜索失败了" in out
     assert "RuntimeError" not in out and "network down" not in out
+
+
+def test_format_reply_cleans_but_keeps_our_notes(monkeypatch):
+    """清洗只针对模型原文；我们追加的截断提示（同为中文括号）必须保留。"""
+    monkeypatch.setattr(core_config, "_config", _cfg(), raising=False)
+    r = llm.Reply(provider="x", text="好的（旁白）没问题", reasoning="", truncated=True, total_tokens=0)
+    out = llm_chat._format_reply(r)
+    assert "旁白" not in out
+    assert "截断" in out

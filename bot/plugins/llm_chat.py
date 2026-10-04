@@ -15,7 +15,7 @@ from nonebot.params import CommandArg
 from nonebot.permission import SUPERUSER
 from nonebot.rule import Rule
 
-from core import affection, budget, context, jargon, llm, memory, mood, persona_evo, personas, search, stickers, style_pairs
+from core import affection, budget, context, jargon, llm, memory, mood, persona_evo, personas, search, stickers, style_pairs, textnorm
 from core.config import get_config, normalize_provider_name
 from core.gate import is_allowed_group, render_message_text, should_reply_plain, strip_text_mention
 from plugins._shared import resolve_at_names, sender_name
@@ -73,7 +73,8 @@ async def _tolerant_text_mention(bot: Bot, event: Event) -> None:
 
 def _format_reply(reply: llm.Reply) -> str:
     cfg = get_config()
-    out = reply.text
+    # 先清洗模型原文（删含中文的括号旁白），再追加我们自己的提示——提示不经过清洗
+    out = textnorm.clean_reply(reply.text) if cfg.reply_clean_enabled else reply.text
     if reply.truncated:
         out += "\n（回答超长被截断，可调大 LLM_MAX_TOKENS）"
     if cfg.llm_show_reasoning and reply.reasoning:
