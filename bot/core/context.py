@@ -319,16 +319,25 @@ def format_context_prompt(
     addressed: bool = True,
     memories: str = "",
     self_qq: int | None = None,
+    now: float | None = None,
 ) -> str:
     """把群聊历史 + 当前消息组装成给 LLM 的最终 prompt（纯函数，可单测）。
 
     addressed=False：消息并非直接对机器人说（决策层主动接话场景），措辞不同。
     memories：记忆系统注入块（可空），插在群聊背景之后。
     self_qq：机器人自己的 QQ——历史里它说过的话标上"（你）"，让模型分得清谁是谁。
+    now：当前时间戳（默认取系统时间）——历史行带 [HH:MM]，尾部标"现在（HH:MM）"，给模型时间感。
     """
-    tail = f"{speaker} 对你说：{text}" if addressed else f"群里 {speaker} 说：{text}"
+    _now = float(now) if now is not None else time.time()
+    hhmm_now = time.strftime("%H:%M", time.localtime(_now))
+    now_line = (
+        f"【现在（{hhmm_now}），{speaker} 对你说】"
+        if addressed
+        else f"【现在（{hhmm_now}），群里 {speaker} 说（没有人 @ 你）】"
+    )
     if not history:
-        return f"{memories}\n\n{tail}" if memories else tail
+        body = f"{now_line}\n{text}"
+        return f"{memories}\n\n{body}" if memories else body
     lines: list[str] = []
     has_self = False
     for row in history:
@@ -344,15 +353,22 @@ def format_context_prompt(
             if is_self:
                 name = f"{name}（你）"
                 has_self = True
-        lines.append(f"{name}: {content}")
+        prefix = ""
+        ts = row.get("ts")
+        if ts is not None:
+            try:
+                prefix = f"[{time.strftime('%H:%M', time.localtime(float(ts)))}] "
+            except (TypeError, ValueError, OverflowError, OSError):
+                prefix = ""
+        lines.append(f"{prefix}{name}: {content}")
     if not lines:
-        return f"{memories}\n\n{tail}" if memories else tail
-    now = f"【现在，{speaker} 对你说】" if addressed else f"【现在，群里 {speaker} 说（没有人 @ 你）】"
+        body = f"{now_line}\n{text}"
+        return f"{memories}\n\n{body}" if memories else body
     mid = f"\n\n{memories}" if memories else ""
     hint = "；标了（你）的发言是你自己说的，注意区分" if has_self else ""
     return (
         f"【群聊背景（最近几条消息，供你了解上下文，不用逐条回应{hint}）】\n"
         + "\n".join(lines)
         + mid
-        + f"\n\n{now}\n{text}"
+        + f"\n\n{now_line}\n{text}"
     )

@@ -1,3 +1,5 @@
+import time
+
 from core import context
 
 
@@ -48,8 +50,10 @@ def test_format_context_prompt():
     assert "乙: 随便" in out
     assert "丙: " not in out  # 空内容行被跳过
     assert "丁 对你说" in out and "你们决定了吗" in out
-    # 无历史时退化为简单格式
-    assert context.format_context_prompt([], "丁", "在吗") == "丁 对你说：在吗"
+    # 无历史时退化为简单格式（带当前时间标记）
+    fixed = 1759556400.0
+    hhmm = time.strftime("%H:%M", time.localtime(fixed))
+    assert context.format_context_prompt([], "丁", "在吗", now=fixed) == f"【现在（{hhmm}），丁 对你说】\n在吗"
 
 
 def test_format_context_prompt_not_addressed():
@@ -86,3 +90,20 @@ def test_format_context_prompt_no_self_no_hint():
     assert "（你）" not in out
     out2 = context.format_context_prompt(hist, "小红", "在吗")  # 不传 self_qq：与旧版一致
     assert "（你）" not in out2
+
+
+def test_format_context_prompt_time_sense():
+    fixed_now = 1759556400.0
+    ts1 = fixed_now - 300
+    ts2 = fixed_now - 120
+    hhmm_now = time.strftime("%H:%M", time.localtime(fixed_now))
+    hist = [
+        {"name": "甲", "text": "下午吃什么", "ts": ts1},
+        {"name": "乙", "text": "随便", "ts": ts2},
+        {"name": "丙", "text": "没时间戳的行"},  # 无 ts：不加前缀（向后兼容）
+    ]
+    out = context.format_context_prompt(hist, "丁", "你们决定了吗", now=fixed_now)
+    assert f"[{time.strftime('%H:%M', time.localtime(ts1))}] 甲: 下午吃什么" in out
+    assert f"[{time.strftime('%H:%M', time.localtime(ts2))}] 乙: 随便" in out
+    assert "\n丙: 没时间戳的行" in out  # 无时间戳的行保持原样
+    assert f"【现在（{hhmm_now}），丁 对你说】" in out
