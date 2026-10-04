@@ -66,3 +66,23 @@ def test_format_context_prompt_memories():
         [{"name": "A", "text": "x"}], "小明", "hi", memories="【你记得的事】"
     )
     assert "【你记得的事】" in out2 and "【群聊背景" in out2
+
+
+def test_format_context_prompt_marks_self():
+    hist = [
+        {"name": "小红", "text": "你好", "user_id": 111},
+        {"name": "十九", "text": "嗯嗯", "user_id": "123456789"},  # 字符串 id 也要能识别
+        {"name": "小红", "text": "在吗", "user_id": 111},
+    ]
+    out = context.format_context_prompt(hist, "小红", "在吗", self_qq=123456789)
+    assert "十九（你）: 嗯嗯" in out
+    assert "小红（你）" not in out
+    assert "标了（你）" in out
+
+
+def test_format_context_prompt_no_self_no_hint():
+    hist = [{"name": "小红", "text": "你好", "user_id": 111}]
+    out = context.format_context_prompt(hist, "小红", "在吗", self_qq=123456789)
+    assert "（你）" not in out
+    out2 = context.format_context_prompt(hist, "小红", "在吗")  # 不传 self_qq：与旧版一致
+    assert "（你）" not in out2

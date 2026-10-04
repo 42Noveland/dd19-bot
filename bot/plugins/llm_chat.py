@@ -178,7 +178,7 @@ async def chat_flow(
             if str(row.get("message_id")) != str(event.message_id)
         ][-cfg.llm_context_messages :]
         prompt = context.format_context_prompt(
-            history, sender_name(event), text, addressed=addressed, memories=mem_block
+            history, sender_name(event), text, addressed=addressed, memories=mem_block, self_qq=int(event.self_id)
         )
     elif mem_block:
         prompt = f"{mem_block}\n\n{text}"

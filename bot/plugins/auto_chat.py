@@ -111,7 +111,9 @@ async def _judge_and_maybe_reply(bot: Bot, event: GroupMessageEvent) -> None:
             for row in context.recent_messages(gid, limit=cfg.llm_context_messages + 1)
             if str(row.get("message_id")) != str(event.message_id)
         ][-cfg.llm_context_messages :]
-        material = context.format_context_prompt(history, sender_name(event), text, addressed=False)
+        material = context.format_context_prompt(
+            history, sender_name(event), text, addressed=False, self_qq=int(event.self_id)
+        )
         pname, ptext = personas.resolve(gid)
         verdict = await llm.chat_once(
             material,

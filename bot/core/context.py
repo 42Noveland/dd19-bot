@@ -318,27 +318,40 @@ def format_context_prompt(
     text: str,
     addressed: bool = True,
     memories: str = "",
+    self_qq: int | None = None,
 ) -> str:
     """把群聊历史 + 当前消息组装成给 LLM 的最终 prompt（纯函数，可单测）。
 
     addressed=False：消息并非直接对机器人说（决策层主动接话场景），措辞不同。
     memories：记忆系统注入块（可空），插在群聊背景之后。
+    self_qq：机器人自己的 QQ——历史里它说过的话标上"（你）"，让模型分得清谁是谁。
     """
     tail = f"{speaker} 对你说：{text}" if addressed else f"群里 {speaker} 说：{text}"
     if not history:
         return f"{memories}\n\n{tail}" if memories else tail
     lines: list[str] = []
+    has_self = False
     for row in history:
         name = str(row.get("name") or row.get("user_id") or "?")
         content = str(row.get("text") or "").strip()
-        if content:
-            lines.append(f"{name}: {content}")
+        if not content:
+            continue
+        if self_qq is not None:
+            try:
+                is_self = int(row.get("user_id") or 0) == int(self_qq)
+            except (TypeError, ValueError):
+                is_self = False
+            if is_self:
+                name = f"{name}（你）"
+                has_self = True
+        lines.append(f"{name}: {content}")
     if not lines:
         return f"{memories}\n\n{tail}" if memories else tail
     now = f"【现在，{speaker} 对你说】" if addressed else f"【现在，群里 {speaker} 说（没有人 @ 你）】"
     mid = f"\n\n{memories}" if memories else ""
+    hint = "；标了（你）的发言是你自己说的，注意区分" if has_self else ""
     return (
-        "【群聊背景（最近几条消息，供你了解上下文，不用逐条回应）】\n"
+        f"【群聊背景（最近几条消息，供你了解上下文，不用逐条回应{hint}）】\n"
         + "\n".join(lines)
         + mid
         + f"\n\n{now}\n{text}"
