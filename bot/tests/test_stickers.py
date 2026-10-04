@@ -17,7 +17,7 @@ def test_pick_matches_keywords(tmp_path):
     context.reset(tmp_path / "ctx.db")
     stickers.reset()
     _mk(tmp_path, "a.jpg", "一只猫竖起大拇指，表达赞同、点赞", seen=3)
-    _mk(tmp_path, "b.jpg", "动漫女仆半睁眼坏笑，表达得意、心动")
+    _mk(tmp_path, "b.jpg", "动漫角色半睁眼坏笑，表达得意、心动")
     _mk(tmp_path, "c.jpg", "一张风景照片，蓝天白云")
     row = stickers.pick("得意", 1)
     assert row is not None and row["md5"] == "b.jpg"
@@ -50,7 +50,7 @@ def test_pick_avoids_recent_repeat(tmp_path):
 def test_pick_repeat_allows_recent(tmp_path):
     context.reset(tmp_path / "ctx.db")
     stickers.reset()
-    _mk(tmp_path, "b.jpg", "动漫女仆坏笑，表达得意")
+    _mk(tmp_path, "b.jpg", "动漫角色坏笑，表达得意")
     row = stickers.pick("得意", 1)
     assert row is not None
     stickers.note_sent(1, row["md5"])
@@ -61,7 +61,7 @@ def test_pick_repeat_allows_recent(tmp_path):
 def test_pick_skips_missing_files(tmp_path):
     context.reset(tmp_path / "ctx.db")
     stickers.reset()
-    _mk(tmp_path, "gone.jpg", "表达得意的女仆")
+    _mk(tmp_path, "gone.jpg", "表达得意的角色")
     (tmp_path / "gone.jpg").unlink()
     assert stickers.pick("得意", 1) is None
 

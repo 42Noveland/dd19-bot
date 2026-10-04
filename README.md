@@ -10,7 +10,7 @@
 ## 目录结构
 
 ```
-D:\agent-workspace\qqbot\
+qqbot\
 ├─ bot\                      NoneBot2 工程（核心/插件/测试/人设）
 │   ├─ bot.py                入口（OneBot v11 适配器 + 插件加载）
 │   ├─ core\                 核心（config/llm/budget/search/gate/context/vision/stickers/memory/mood/personas/decay/style_pairs/jargon/affection/persona_evo）
@@ -32,7 +32,7 @@ D:\agent-workspace\qqbot\
 2. **bot**：双击 `bot\start-bot.cmd`（保持窗口开着；若提示端口 8081 已被占用，
    按任意键 = 结束旧实例并一键重启）。
    日志出现 `Bot 123456789 connected` 即接通（日志同时按天存档到 `bot\logs\bot-YYYY-MM-DD.log`）。
-3. （可选）**本机模型**：`D:\agent-workspace\llmtest\start-qwen38.cmd`（:8080）；
+3. （可选）**本机模型**：启动本机 llama.cpp 服务（:8080）；
    启动后 `/model local` 切到本机模型（免费、数据不出本机）。
 
 ## 自检命令
@@ -57,8 +57,9 @@ D:\agent-workspace\qqbot\
 | 人格演化探针 | `.venv\Scripts\python.exe tests\e2e\probe_persona_evo.py` | 待审/批准/生效/回滚 ✓ |
 | 全链路自测 | bot 运行时 `bot\.venv\Scripts\python.exe bot\tests\e2e\fake_napcat.py` | `ALL PASS` |
 | NapCat 面板 | http://127.0.0.1:6099/webui（token 见 `napcat\NapCat.Shell.Node\napcat\config\webui.json`） | 仅本机可访问 |
-- NapCat HTTP API：127.0.0.1:3000（仅本机，调试/运维用；get_image、send_group_msg 等）
 | 群内 | `/ping` `/jrrp` `/help`；`@dd19 内容`；`/search 关键词`；`/usage`；`/model`（管理员） | 正常回复 |
+
+- NapCat HTTP API：127.0.0.1:3000（仅本机，调试/运维用；get_image、send_group_msg 等）
 
 ## 关键配置（bot\.env）
 
@@ -179,17 +180,17 @@ D:\agent-workspace\qqbot\
 ## 备份
 
 `bot\.env`、`bot\persona.md`、`napcat\NapCat.Shell.Node\napcat\config\webui.json`、
-`...\config\onebot11_123456789.json` → 复制到 `D:\agent-workspace\qqbot-backup\`（改配置后手动同步）。
+`...\config\onebot11_123456789.json` → 复制到本地备份目录（改配置后手动同步）。
 
 ## 实施备注（2026-10-02）
 
 - OneKey 一键包因腾讯 CDN 旧链接失效（404，见 NapCat issue #1973）不可用 →
   改用 **NapCat.Shell.Windows.Node.zip**（自带 QQ 纯 shell 核心 9.9.31-49738，免装 QQ 客户端）。
 - Node 包缺 wrapper.node 的两个静态依赖 `crypto.dll` / `ssl.dll`，
-  已从本机 QQ 安装目录（`D:\tools\qq\versions\9.9.31-49738\resources\app\`）复制补齐。
-- NapCat 账号数据目录：`C:\Users\Noveland\Documents\Tencent Files\NapCat\data`。
+  已从本机 QQ 安装目录（`versions\9.9.31-49738\resources\app\`）复制补齐。
+- NapCat 账号数据目录：`%USERPROFILE%\Documents\Tencent Files\NapCat\data`。
 - 端口：6099（WebUI，仅本机）/ 8081（bot 反向 WS）/ 8080（本机 llama，可选）。
-- 不装系统服务、不改 PATH/注册表；所有文件在 `D:\agent-workspace\qqbot\` 内。
+- 不装系统服务、不改 PATH/注册表；所有文件都在项目目录内。
 
 ## 验收记录（2026-10-02）
 
@@ -214,7 +215,7 @@ D:\agent-workspace\qqbot\
   图片识别全链路（下载→去重→云 vision→回填：测试图读出"苹果数量=42"；真实群表情包识别+回填）✔；
   句中 @ 昵称渲染、回复自身记录入上下文 ✔；单测 56 passed。
 - **表达层·表情包回应（2026-10-03）**：send_sticker 工具上线（LLM 按需调用→图库语义匹配→发图→记账）；
-  实测探针："来张'得意'的表情包" → 发出群里收集的女仆图 + "发了，够得意了吧哈哈" ✔；单测 123 passed。
+  实测探针："来张'得意'的表情包" → 从图库挑中得意的表情包发出 + "发了，够得意了吧哈哈" ✔；单测 123 passed。
 - **图片管道加固（2026-10-03）**：取图改为 **NapCat 本地缓存优先**（`get_image` API），修掉 CDN 链接过期导致的静默失败；
   补识别 2 张历史图（含 1.3MB 动图）；真机发图实测通过（`file:///` 路径，retcode 0）。
 - **自然配图（2026-10-03）**：回复时按对话情绪主动配图（系统提示 + 同义扩展 + 频率自控）；
@@ -226,7 +227,7 @@ D:\agent-workspace\qqbot\
   实测：事实挤出上下文窗口后仍被记住并答出（"蓝色"）✔；单测 123 passed。
 - **记忆检索升级（2026-10-03）**：多路检索（本人/@提及/名字出现/话题相关）；实测 @提及→"73 啊，这个我记得"、名字→"蓝色…" ✔；单测 123 passed。
 - **情绪状态系统（2026-10-03）**：心情随互动演变+半衰期衰减，回复自然带上；发图综合"心情×话题×内容"
-  （图库清单喂给模型）；实测"心情怎么样？"→ 发出得意女仆图 + "这波得意稳了 😎" ✔；单测 123 passed。
+  （图库清单喂给模型）；实测"心情怎么样？"→ 发出得意的表情包 + "这波得意稳了 😎" ✔；单测 123 passed。
 - **按群人设 + 动态切换（2026-10-03）**：每群独立人设（DB 持久、文件热更新）+ `/persona` 命令（管理员，立即生效）；
   实测切换 Elena → "嗯，你好呀……我叫 Elena…"、恢复默认 ✔；单测 123 passed。
 - **机制移植·第一梯队（2026-10-03）**：借鉴 astrbot self-learning——① 动态块改拼用户消息尾部（system 稳定保前缀缓存）；② 贴图库 15 天新鲜度衰减（1.0→0.2 二次曲线：选择加权 + 图库清单重排 + 无匹配加权随机）；单测 123 passed；探针（引用/表情包/情绪/接话）+ e2e ALL PASS。

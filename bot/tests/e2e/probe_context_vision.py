@@ -5,7 +5,7 @@ Part B：注入一条图片消息（URL 指向本地 HTTP 服务），等异步 
         → bot 应能答出图中内容（苹果数量 = 42）。
 
 用法：
-    python -m http.server 8099 --directory D:\\agent-workspace\\llmtest\\dl   # 另起
+    python -m http.server 8099 --directory <图片所在目录>   # 另起
     python tests/e2e/probe_context_vision.py http://127.0.0.1:8099/vision_test.png
 """
 import asyncio
