@@ -111,3 +111,33 @@ def test_chance_gate_still_works(monkeypatch):
     """概率门兜底仍在：chance=0 时普通消息不进入判定。"""
     called = _run_consider(monkeypatch, _cfg(AUTO_REPLY_CHANCE="0.0"), [])
     assert called == []
+
+
+def test_debounce_merges_rapid_messages(monkeypatch):
+    """#7：同人短窗连发 → 只判定一次（合并文本进判定材料）。"""
+    monkeypatch.setattr(core_config, "_config", _cfg(), raising=False)
+    monkeypatch.setattr(auto_chat.debounce, "WINDOW", 0.05)
+    auto_chat.debounce.reset()
+    monkeypatch.setattr(auto_chat.context, "recent_messages", lambda *a, **k: [])
+    monkeypatch.setattr(auto_chat.personas, "resolve", lambda gid: ("十九", "人设"))
+
+    calls: list[str] = []
+
+    async def fake_chat_once(prompt, provider, **kw):
+        calls.append(str(prompt))
+        return types.SimpleNamespace(text="不接")
+
+    monkeypatch.setattr(auto_chat.llm, "chat_once", fake_chat_once)
+
+    ev1 = _fake_event("在吗")
+    ev2 = _fake_event("忙不忙")
+
+    async def go():
+        t1 = asyncio.create_task(auto_chat._judge_and_maybe_reply(_fake_bot(), ev1))
+        await asyncio.sleep(0.01)
+        t2 = asyncio.create_task(auto_chat._judge_and_maybe_reply(_fake_bot(), ev2))
+        await asyncio.gather(t1, t2)
+
+    asyncio.run(go())
+    assert len(calls) == 1  # 只判定一次（第一条被取代）
+    assert "在吗" in calls[0] and "忙不忙" in calls[0]  # 合并文本都在材料里

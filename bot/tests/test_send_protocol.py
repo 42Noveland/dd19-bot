@@ -300,7 +300,7 @@ def test_chat_flow_protocol_injects_spec(tmp_path, monkeypatch):
         sent.append(str(msg))
 
     asyncio.run(llm_chat.chat_flow(bot=_FakeBot(sent), event=_fake_event(), text="在吗", send=send))
-    assert seen["names"] == ["send_message"]
+    assert seen["names"] == ["send_message", "send_reaction"]
     assert callable(seen["is_replied"]) and seen["is_replied"]() is False
 
 
@@ -487,3 +487,61 @@ def test_chat_flow_fallback_repeat_silent(tmp_path, monkeypatch):
 
     asyncio.run(llm_chat.chat_flow(bot=_FakeBot(sent), event=ev, text="在吗", send=send))
     assert sent == []  # 重复内容静默
+
+
+# ── #6a/#6b 贴图回退链 + 贴表情 ──────────────────────────────────────────────
+
+
+def test_sticker_handler_fallback_chain(tmp_path, monkeypatch):
+    """#6a：第一张发送失败 → 自动换下一张（最多试 3 张）。"""
+    from core import stickers as core_stickers
+
+    context.reset(tmp_path / "ctx.db")
+    core_stickers.reset()
+    for name in ("a.jpg", "b.jpg"):
+        f = tmp_path / name
+        f.write_bytes(b"x" * 16)
+        context.image_upsert(name, str(f), "测试表情包", "test")
+    monkeypatch.setattr(core_config, "_config", _cfg(STICKER_ENABLED="1"), raising=False)
+
+    sent: list[str] = []
+    fails = {"n": 0}
+
+    class _B:
+        async def send(self, event, msg):
+            fails["n"] += 1
+            if fails["n"] == 1:
+                raise RuntimeError("upload failed")
+            sent.append(str(msg))
+
+    state = {"text": 0, "any": 0}
+    handler = llm_chat._make_sticker_handler(_B(), _fake_event(), state)
+    result = asyncio.run(handler("send_sticker", {"query": "测试"}))
+    assert "已发送" in result
+    assert len(sent) == 1  # 第二张成功发出
+    assert state["any"] == 1
+
+
+def test_reaction_handler_menu_and_limits(monkeypatch):
+    """#6b：菜单映射→set_msg_emoji_like；一轮只能贴一个；未知名给菜单提示。"""
+    monkeypatch.setattr(core_config, "_config", _cfg(), raising=False)
+    calls: list[tuple] = []
+
+    class _B:
+        async def call_api(self, api, **kw):
+            calls.append((api, kw))
+            return {}
+
+    state = {"text": 0, "any": 0}
+    handler = llm_chat._make_reaction_handler(_B(), _fake_event(), state)
+    r1 = asyncio.run(handler("send_reaction", {"emoji": "赞"}))
+    assert calls and calls[0][0] == "set_msg_emoji_like"
+    assert calls[0][1] == {"message_id": 1001, "emoji_id": "76"}
+    assert state["any"] == 1 and "已贴上" in r1
+
+    r2 = asyncio.run(handler("send_reaction", {"emoji": "笑哭"}))
+    assert "别连贴" in r2 and len(calls) == 1  # 一轮一个
+
+    handler2 = llm_chat._make_reaction_handler(_B(), _fake_event(), {"text": 0, "any": 0})
+    r3 = asyncio.run(handler2("send_reaction", {"emoji": "不存在"}))
+    assert "菜单里没有" in r3

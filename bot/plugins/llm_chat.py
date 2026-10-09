@@ -17,7 +17,7 @@ from nonebot.params import CommandArg
 from nonebot.permission import SUPERUSER
 from nonebot.rule import Rule
 
-from core import affection, budget, context, jargon, llm, memory, mood, persona_evo, personas, search, stickers, style_pairs, textnorm
+from core import affection, budget, context, debounce, jargon, llm, memory, mood, persona_evo, personas, search, stickers, style_pairs, textnorm
 
 # 反 AI 味说话规则库（在 MaiBot「回复纪律」基础上扩充；机制借鉴 QQ-agent / qq-bridge 的
 # 「仿真群友」设计，文案原创、适配「十九」人设）。走 extra_system：system 稳定区、保前缀缓存。
@@ -71,6 +71,37 @@ _SEND_MESSAGE_SPEC: dict[str, Any] = {
                 }
             },
             "required": ["messages"],
+        },
+    },
+}
+
+# 贴表情菜单（#6b）：中文名 → QQ 表情 ID（官方对照表：76=赞、99=鼓掌、32=疑问、
+# 66=爱心；128514=😂；179=doge）。只放高置信度、语义明确的几个，避免贴错。
+_REACTION_MENU = {
+    "赞": "76",
+    "笑哭": "128514",
+    "鼓掌": "99",
+    "疑问": "32",
+    "爱心": "66",
+    "doge": "179",
+}
+
+_REACTION_SPEC: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "send_reaction",
+        "description": (
+            "给刚才那条消息贴一个小表情（轻量回应，不用专门说话）。"
+            "emoji 从固定菜单里选：赞、笑哭、鼓掌、疑问、爱心、doge。"
+            "适合：想回应但不值得发消息的时候（收到好消息、被逗笑、无语、认同）。"
+            "贴上后安安静静，不要汇报、不要连着贴。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "emoji": {"type": "string", "description": "菜单名：赞/笑哭/鼓掌/疑问/爱心/doge"}
+            },
+            "required": ["emoji"],
         },
     },
 }
@@ -158,14 +189,34 @@ def _make_sticker_handler(bot: Bot, event: GroupMessageEvent, state: dict | None
             return "本轮已经发过表情包了，先别刷图，用文字接着说"
         query = str(args.get("query") or "").strip()
         repeat = bool(args.get("repeat"))
+        # #6a 发图失败回退链：最多试 3 张（失败图记入防重窗口 → 重挑自然换图）
         row = stickers.pick(query, event.group_id, repeat=repeat)
         if row is None:
             return "图库还是空的（还没从群里收到可用图片），先用文字回复吧"
-        try:
-            uri = Path(str(row["path"])).resolve().as_uri()
-            await bot.send(event, MessageSegment.image(uri))
-        except Exception as exc:  # noqa: BLE001
-            return f"表情包发送失败：{exc}"
+        tried: set[str] = set()
+        last_exc: Exception | None = None
+        sent_row: dict | None = None
+        for _ in range(3):
+            md5 = str(row.get("md5") or "")
+            if md5 in tried:
+                break  # 小图库兜底会重复给同一张：不死磕
+            tried.add(md5)
+            try:
+                uri = Path(str(row["path"])).resolve().as_uri()
+                await bot.send(event, MessageSegment.image(uri))
+                sent_row = row
+                last_exc = None
+                break
+            except Exception as exc:  # noqa: BLE001 —— 单张失败换下一张
+                last_exc = exc
+                stickers.note_sent(event.group_id, md5)  # 失败图进防重窗口
+                new_row = stickers.pick(query, event.group_id, repeat=repeat)
+                if new_row is None:
+                    break
+                row = new_row
+        if sent_row is None:
+            return f"表情包发送失败：{last_exc}"
+        row = sent_row
         sent["n"] += 1
         if state is not None:
             state["any"] += 1  # 贴图也是"对外发过东西"：防重放守卫生效
@@ -324,6 +375,31 @@ def _make_send_message_handler(
     return _handler
 
 
+def _make_reaction_handler(bot: Bot, event: GroupMessageEvent, state: dict):
+    """send_reaction 工具执行器（#6b）：给触发消息贴一个小表情（每轮最多 1 个）。"""
+    reacted = {"done": False}
+
+    async def _handler(name: str, args: dict) -> str:
+        if reacted["done"]:
+            return "这轮已经贴过了，别连贴"
+        raw = str(args.get("emoji") or "").strip()
+        eid = _REACTION_MENU.get(raw)
+        if not eid:
+            return f"菜单里没有「{raw}」这个表情；可选：{'、'.join(_REACTION_MENU)}"
+        mid = getattr(event, "message_id", None)
+        if not mid:
+            return "这条消息没法贴表情"
+        try:
+            await bot.call_api("set_msg_emoji_like", message_id=int(mid), emoji_id=eid)
+        except Exception as exc:  # noqa: BLE001 —— 贴表情失败不致命
+            return f"贴表情失败（{exc}）"
+        reacted["done"] = True
+        state["any"] += 1  # 也算对外回应：防重放守卫生效
+        return "已贴上。不用汇报、不用重复贴；想说话就调 send_message。"
+
+    return _handler
+
+
 async def chat_flow(
     bot: Bot,
     event: GroupMessageEvent,
@@ -428,6 +504,8 @@ async def chat_flow(
         handlers["send_message"] = _make_send_message_handler(
             _direct_send, event, persona_name, send_state, quote_first=quote_first
         )
+        specs.append(_REACTION_SPEC)
+        handlers["send_reaction"] = _make_reaction_handler(bot, event, send_state)
     if cfg.sticker_enabled:
         try:
             if context.sticker_count() > 0:
@@ -526,7 +604,11 @@ async def _handle_plain(bot: Bot, event: GroupMessageEvent) -> None:
         return
     names = await resolve_at_names(bot, event.group_id, message)
     text = render_message_text(message, str(bot.self_id), names)
-    await _reply_chat(bot, chat_all, event, text)
+    # #7 防抖聚批：同人短窗连发的消息只以末条为准（合并文本）；被取代的直接放弃
+    merged = await debounce.merge_window("direct", event.group_id, event.user_id, event, text)
+    if merged is None:
+        return
+    await _reply_chat(bot, chat_all, event, merged)
 
 
 @chat.handle()

@@ -22,7 +22,7 @@ from nonebot import on_message
 from nonebot.adapters.onebot.v11 import Bot, Event, GroupMessageEvent
 from nonebot.rule import Rule
 
-from core import context, llm, personas
+from core import context, debounce, llm, personas
 from core.config import get_config
 from core.gate import is_allowed_group, mentions_name, parse_judge_verdict, render_message_text
 from plugins._shared import resolve_at_names, sender_name
@@ -112,12 +112,18 @@ async def _consider(bot: Bot, event: GroupMessageEvent) -> None:
 async def _judge_and_maybe_reply(bot: Bot, event: GroupMessageEvent) -> None:
     cfg = get_config()
     gid = event.group_id
-    _inflight.add(gid)
     try:
         names = await resolve_at_names(bot, gid, event.get_message())
         text = render_message_text(event.get_message(), str(bot.self_id), names)
         if not text:
             return
+        # #7 防抖聚批：同人短窗连发只以末条为准（被取代则放弃）。
+        # 放在 _inflight.add 之前——窗口期不占互斥位，否则同人的第二条进不来。
+        merged = await debounce.merge_window("auto", gid, event.user_id, event, text)
+        if merged is None:
+            return
+        text = merged
+        _inflight.add(gid)
         history = [
             row
             for row in context.recent_messages(gid, limit=cfg.llm_context_messages + 1)
