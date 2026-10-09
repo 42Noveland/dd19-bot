@@ -80,6 +80,22 @@ def test_recent_bot_message_does_not_block(monkeypatch):
     assert called == [1001]
 
 
+def test_bot_recent_message_forces_judge(monkeypatch):
+    """对话延续窗口：bot 120s 内在本群说过话 → 跳过概率门、必判（即使机会=0）。"""
+    now = time.time()
+    recent = [{"user_id": 180517257, "ts": now - 30, "message_id": 999}]
+    called = _run_consider(monkeypatch, _cfg(AUTO_REPLY_CHANCE="0.0"), recent)
+    assert called == [1001]
+
+
+def test_stale_bot_message_does_not_force(monkeypatch):
+    """窗口外（>120s）的 bot 消息不触发必判：机会=0 时不判。"""
+    now = time.time()
+    recent = [{"user_id": 180517257, "ts": now - 600, "message_id": 999}]
+    called = _run_consider(monkeypatch, _cfg(AUTO_REPLY_CHANCE="0.0"), recent)
+    assert called == []
+
+
 def test_cooldown_still_respected_when_configured(monkeypatch):
     """冷却>0 时仍拦（配置项语义保留：0=不冷却）。"""
     called = _run_consider(

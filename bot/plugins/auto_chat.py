@@ -1,13 +1,15 @@
 """决策层：群聊主动接话（不@也会回复）。
 
 流程（priority=48；仅 LLM_REPLY_MODE=mention 时生效，@ 消息仍由 llm_chat 处理）：
-  廉价预筛（非@/非命令/非自己消息/每群冷却）→ 概率门（提到机器人名字则必判）
+  廉价预筛（非@/非命令/非自己消息/每群冷却）→ 概率门（被点名、或对话延续窗口内则必判）
   → 异步 LLM 判断「接/不接」（宁缺毋滥）→ 复用聊天核心静默回复（带引用，可配表情包）。
 
 设计要点：
 - 判断与回复全在后台任务里跑，不阻塞事件处理；同一群同一时刻只判断一条（_inflight）。
 - 判断材料 = 最近群聊记录 + 新消息（addressed=False 措辞）。
 - 接话冷却走 AUTO_REPLY_COOLDOWN 秒（**0=不冷却**，默认 0）；失败一律静默（不打扰群友）。
+- 对话延续窗口：bot 刚在本群说完话（_CONTINUATION_WINDOW 秒内），新消息必判——
+  解决"聊到一半不理人"。
 """
 from __future__ import annotations
 
@@ -28,6 +30,9 @@ from plugins._shared import resolve_at_names, sender_name
 _tasks: set[asyncio.Task] = set()
 _last_auto: dict[int, float] = {}
 _inflight: set[int] = set()
+
+# 对话延续窗口（秒）：bot 说完话后这么久内，新消息必判（跳过概率门）
+_CONTINUATION_WINDOW = 120.0
 
 _JUDGE_RULES = (
     "【任务】你是群聊成员「{name}」。下面给你群聊最近的记录和一条新消息。"
@@ -65,6 +70,21 @@ def _bot_names(cfg, group_id: int) -> list[str]:
     return names
 
 
+def _bot_spoke_recently(group_id: int, self_id: str, window: float = _CONTINUATION_WINDOW) -> bool:
+    """最近 window 秒内机器人在本群说过话（含回复/表情包记录）。
+
+    注意用途：**必判触发**（对话延续窗口——bot 刚说完话，新消息大概率是接话/回答，
+    跳过概率门必判，接不接仍由 judge 把关）。
+    历史教训：曾以"不抢话"拦截身份存在（90s 内说过话就不接），实测导致"刚回过话就
+    不理人"，已删除——本函数回归时用途已反转，勿再当拦截器用。
+    """
+    now = time.time()
+    for row in context.recent_messages(group_id, limit=8):
+        if str(row.get("user_id")) == str(self_id):
+            return now - float(row.get("ts") or 0.0) < window
+    return False
+
+
 @auto_reply.handle()
 async def _consider(bot: Bot, event: GroupMessageEvent) -> None:
     cfg = get_config()
@@ -80,7 +100,9 @@ async def _consider(bot: Bot, event: GroupMessageEvent) -> None:
     now = time.time()
     if gid in _inflight or now - _last_auto.get(gid, 0.0) < cfg.auto_reply_cooldown:
         return
-    if not mentions_name(probe, _bot_names(cfg, gid)) and random.random() >= cfg.auto_reply_chance:
+    # 必判：被点名，或处在对话延续窗口（bot 刚说完话）——否则走概率门
+    must_judge = mentions_name(probe, _bot_names(cfg, gid)) or _bot_spoke_recently(gid, str(bot.self_id))
+    if not must_judge and random.random() >= cfg.auto_reply_chance:
         return
     task = asyncio.create_task(_judge_and_maybe_reply(bot, event))
     _tasks.add(task)
