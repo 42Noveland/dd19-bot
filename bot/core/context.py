@@ -272,6 +272,23 @@ def search_messages(group_id: int, keyword: str, limit: int = 20) -> list[dict]:
     return [dict(r) for r in reversed(rows)]
 
 
+def counts() -> dict:
+    """启动报告用的快统计：messages / images / memories / reminders(未完成)。"""
+    with _lock:
+        conn = _db()
+
+        def _one(sql: str) -> int:
+            row = conn.execute(sql).fetchone()
+            return int(row[0] or 0) if row else 0
+
+        return {
+            "messages": _one("SELECT COUNT(*) FROM messages"),
+            "images": _one("SELECT COUNT(*) FROM images"),
+            "memories": _one("SELECT COUNT(*) FROM memories"),
+            "reminders": _one("SELECT COUNT(*) FROM reminders WHERE done=0"),
+        }
+
+
 # ---------------- reminders（定时提醒 #13） ----------------
 
 
