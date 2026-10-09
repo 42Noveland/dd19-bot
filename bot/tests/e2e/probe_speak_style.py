@@ -6,6 +6,7 @@
 import asyncio
 import json
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -22,9 +23,10 @@ URL = "ws://127.0.0.1:8081/onebot/v11/ws"
 HEADERS = {"X-Self-ID": str(SELF_ID), "X-Client-Role": "Universal"}
 GROUP = _probe_env.group()
 
+# 场景：覆盖 闲聊 / 知识问答（历史最容易触发长篇+分段的场景）
 CASES = [
-    ("闲聊", "今天加班到九点，好累"),
-    ("求助", "帮我推荐几本书呗"),
+    ("生活建议", 29911, "周末想去爬山，有啥推荐吗"),
+    ("知识问答", 29912, "怪物猎人世界的大师等级怎么提升啊"),
 ]
 
 
@@ -39,10 +41,21 @@ def ev(mid: int, uid: int, text: str) -> dict:
     }
 
 
-async def wait_reply(ws, timeout: float = 180.0):
-    """等一条 send_msg，回 ack，返回 (文本, 是否含图片/表情)。"""
+async def collect_reply(ws, timeout: float = 180.0, tail: float = 6.0):
+    """等第一条 send_msg，随后 tail 秒内收集后续消息（贴图/补话大多是连发的）。
+
+    返回 [(text, has_media)]。避免"表情包先到"被误读成上一 case 的回复。
+    """
+    msgs: list[tuple[str, bool]] = []
+    deadline = time.monotonic() + timeout
     while True:
-        raw = await asyncio.wait_for(ws.recv(), timeout=timeout)
+        remaining = (deadline - time.monotonic()) if not msgs else tail
+        if remaining <= 0:
+            break
+        try:
+            raw = await asyncio.wait_for(ws.recv(), timeout=remaining)
+        except asyncio.TimeoutError:
+            break
         d = json.loads(raw)
         action = d.get("action")
         echo = d.get("echo")
@@ -58,9 +71,9 @@ async def wait_reply(ws, timeout: float = 180.0):
                         media = True
             else:
                 text = str(msg)
+            msgs.append((text, media))
             await ws.send(json.dumps({"status": "ok", "retcode": 0, "data": {"message_id": 1}, "echo": echo}))
-            return text, media
-        if action:
+        elif action:
             if action == "get_login_info":
                 data = {"user_id": SELF_ID, "nickname": "dd19"}
             elif action == "get_group_member_info":
@@ -68,19 +81,28 @@ async def wait_reply(ws, timeout: float = 180.0):
             else:
                 data = {}
             await ws.send(json.dumps({"status": "ok", "retcode": 0, "data": data, "echo": echo}))
+    return msgs
 
 
 async def main() -> None:
     async with ws_connect(URL, max_size=2**22, additional_headers=HEADERS) as ws:
-        for i, (name, text) in enumerate(CASES):
-            mid = 8800 + i
-            await ws.send(json.dumps(ev(mid, 29880 + i, text)))
-            try:
-                reply, media = await wait_reply(ws)
-                tag = " [+图]" if media else ""
-                print(f"[{name}] {text}\n  -> {reply[:300]}{tag}\n---")
-            except asyncio.TimeoutError:
-                print(f"[{name}] {text}\n  -> TIMEOUT\n---")
+        for i, (name, uid, text) in enumerate(CASES):
+            mid = 8810 + i
+            await ws.send(json.dumps(ev(mid, uid, text)))
+            msgs = await collect_reply(ws)
+            print(f"[{name}] {text}")
+            if not msgs:
+                print("  -> TIMEOUT")
+            for text_out, media in msgs:
+                nl = text_out.count("\n")
+                tag = "｜含换行!" if nl else ""
+                if text_out.strip():
+                    print(f"  -> ({len(text_out)}字{tag}) {text_out[:260]}")
+                if media:
+                    print("  -> [图片/表情]")
+            print("---")
+            if i < len(CASES) - 1:
+                await asyncio.sleep(3)  # 与下一条拉开一点，减少聚批干扰
     print("PROBE DONE")
 
 
