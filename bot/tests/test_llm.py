@@ -499,3 +499,76 @@ def test_dynamic_blocks_appended_to_user(monkeypatch):
     assert msgs[-1]["role"] == "user"
     assert msgs[-1]["content"].startswith("在吗")
     assert "【动态块】现在有点得意" in msgs[-1]["content"]
+
+
+# ── send_message 协议：is_replied 防重放守卫 ──────────────────────────────
+
+
+def test_is_replied_absorbs_empty_body():
+    """已发送过消息后的空正文：静默成功（不报警、不触发回退重试）。"""
+    provider = load_config({}).providers["local"]
+    completion = asyncio.run(
+        llm.chat_once(
+            "hi",
+            provider,
+            transport=_capture_transport({}, {"content": "", "reasoning_content": "只有思考"}, finish_reason="length"),
+            is_replied=lambda: True,
+        )
+    )
+    assert completion.text == ""
+    assert completion.reasoning == "只有思考"
+
+
+def test_is_replied_false_still_raises_on_empty():
+    provider = load_config({}).providers["local"]
+    with pytest.raises(llm.EmptyReplyError):
+        asyncio.run(
+            llm.chat_once(
+                "hi",
+                provider,
+                transport=_capture_transport({}, {"content": ""}),
+                is_replied=lambda: False,
+            )
+        )
+
+
+def test_chat_stops_fallback_when_already_replied(monkeypatch):
+    """已发送过消息：任何后端失败都不再尝试后续后端（防重放导致重复发言）。"""
+    calls: list[str] = []
+
+    async def fake_chat_once(text, provider, **kwargs):
+        calls.append(provider.name)
+        raise httpx.ConnectError("boom")
+
+    monkeypatch.setattr(llm, "chat_once", fake_chat_once)
+    with pytest.raises(httpx.ConnectError):
+        asyncio.run(llm.chat("hi", chain=["local", "opencode_go"], is_replied=lambda: True))
+    assert calls == ["local"]  # 未尝试 opencode_go
+
+
+def test_chat_fallback_still_works_when_not_replied(monkeypatch):
+    calls: list[str] = []
+
+    async def fake_chat_once(text, provider, **kwargs):
+        calls.append(provider.name)
+        if provider.name == "local":
+            raise httpx.ConnectError("boom")
+        return llm.Completion(text="备用成功")
+
+    monkeypatch.setattr(llm, "chat_once", fake_chat_once)
+    reply = asyncio.run(llm.chat("hi", chain=["local", "opencode_go"], is_replied=lambda: False))
+    assert calls == ["local", "opencode_go"]
+    assert reply.text == "备用成功"
+
+
+def test_chat_passes_is_replied_to_chat_once(monkeypatch):
+    received = {}
+
+    async def fake_chat_once(text, provider, **kwargs):
+        received.update(kwargs)
+        return llm.Completion(text="好")
+
+    monkeypatch.setattr(llm, "chat_once", fake_chat_once)
+    fn = lambda: True  # noqa: E731
+    asyncio.run(llm.chat("hi", chain=["local"], is_replied=fn))
+    assert received.get("is_replied") is fn

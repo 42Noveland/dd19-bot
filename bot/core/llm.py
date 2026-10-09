@@ -192,12 +192,16 @@ async def chat_once(
     extra_system: str = "",
     system_prompt_override: str | None = None,
     dynamic_blocks: str = "",
+    is_replied: Callable[[], bool] | None = None,
 ) -> Completion:
     """向单个后端发一次请求（含工具循环：web_search + 调用方附加工具）；空正文抛 EmptyReplyError。
 
     预算执行点：单次会话上限（LLM_MAX_TOKENS，输入估算+输出上限合计）与
     单日上限（core.budget 记账，含工具调用各轮）都在这里生效；
     额度用完抛 QuotaExceededError。
+
+    is_replied：send_message 协议的防重放守卫。返回 True = 本轮运行已对外发过消息，
+    此时"空正文"不再抛错（静默收尾），避免触发回退链重放整段对话造成重复发言。
     """
     cfg = get_config()
     if budget.exhausted():
@@ -308,10 +312,18 @@ async def chat_once(
                 budget.record(provider.name, round_tokens)
             total_tokens += round_tokens
             if not body:
+                # send_message 协议：本轮已发过消息 → 空正文=正常收尾，静默成功
+                # （否则回退链会重放整段对话、可能重复发言）
+                if is_replied is not None and is_replied():
+                    return Completion(
+                        text="", reasoning=reasoning, truncated=finish_reason == "length", total_tokens=total_tokens
+                    )
                 raise EmptyReplyError(f"空回复（finish_reason={finish_reason}，思考 {len(reasoning)} 字）")
             return Completion(
                 text=body, reasoning=reasoning, truncated=finish_reason == "length", total_tokens=total_tokens
             )
+    if is_replied is not None and is_replied():
+        return Completion(text="")  # 已发过消息：工具轮次耗尽按静默成功处理，不再触发回退
     raise EmptyReplyError(f"工具调用轮次超限（{cfg.llm_tool_max_rounds} 轮），未得到最终回答")
 
 
@@ -325,8 +337,13 @@ async def chat(
     extra_system: str = "",
     system_prompt_override: str | None = None,
     dynamic_blocks: str = "",
+    is_replied: Callable[[], bool] | None = None,
 ) -> Reply:
-    """按 主选 → 回退链 依次尝试，返回第一个成功的结果；全失败则抛出最后一个异常。"""
+    """按 主选 → 回退链 依次尝试，返回第一个成功的结果；全失败则抛出最后一个异常。
+
+    is_replied：send_message 协议的防重放守卫（见 chat_once 注释）。
+    命中时后端失败不再尝试后续后端 —— 重放整段对话可能让模型重复发言。
+    """
     cfg = get_config()
     if chain is None:
         chain = [current_default(), *cfg.llm_fallbacks]
@@ -346,6 +363,7 @@ async def chat(
                 extra_system=extra_system,
                 system_prompt_override=system_prompt_override,
                 dynamic_blocks=dynamic_blocks,
+                is_replied=is_replied,
             )
             return Reply(
                 provider=name,
@@ -358,6 +376,8 @@ async def chat(
             raise  # 配额是全局状态，不再尝试后续后端
         except Exception as exc:  # noqa: BLE001 —— 回退链需要吞掉单个后端的错误
             last_exc = exc
+            if is_replied is not None and is_replied():
+                break  # 已对外发过消息：停止回退（重放整段对话可能造成重复发言）
     if last_exc is not None:
         raise last_exc
     raise LookupError("没有可用的 LLM 提供商（检查 bot/.env 的 LLM_PROVIDER/LLM_FALLBACKS）")

@@ -6,10 +6,12 @@ LLM_REPLY_MODE=command 时仅 /chat 指令触发。斜杠开头的消息一律�
 """
 import time
 from pathlib import Path
+from typing import Any
 
 from loguru import logger as _log
 from nonebot import on_command, on_message
 from nonebot.adapters.onebot.v11 import Bot, Event, GroupMessageEvent, Message, MessageSegment
+from nonebot.exception import FinishedException
 from nonebot.message import event_preprocessor
 from nonebot.params import CommandArg
 from nonebot.permission import SUPERUSER
@@ -28,12 +30,51 @@ _CHAT_RULES = (
     "3. 不总结大家的发言，不点评每个人的观点，不硬把话题拉回来；群聊不是开会，你不是主持人。\n"
     "4. 不知道就直说不知道，不感兴趣也可以让人看出来；不用为了显得周到硬找话说。\n"
     "5. 不用每句都客气、周到；熟人之间可以直来直去，别每条回复都带反问或关心人的话。\n"
-    "6. 聊天别写小作文：一条消息顺着一口气说完，不分段、不换行、不先总后分、不列一二三（对方明确要清单除外）。\n"
+    "6. 聊天别写小作文：单条短一点、一口气说完，不分段、不换行、不先总后分、不列一二三（对方明确要清单除外）。\n"
     "7. 长度拿捏：平时聊天一两句、几十字就够；被问正经问题可以说清楚些，但也用聊天的口气、别铺长篇。"
     "偶尔回得很短很正常——“嗯”“哈哈”“？”“行吧”这种就行。\n"
     "8. 用过搜索就直接说结果，别汇报“我查了一下”“根据搜索”这类过程。\n"
     "9. 少用“绝对”“保证”“强烈推荐”这类夸张词，也别用总结式的收尾话。\n"
 )
+
+# send_message 协议前置条款（仅 SEND_PROTOCOL_ENABLED=1 时随规则注入）：
+# 正文=思考、发言走工具、数组分条。关闭协议时这段不注入（没有工具可说）。
+_PROTOCOL_RULES = (
+    "【发言方式】要说话就调用 send_message 工具——它才是真正发到群里的；你写的正文只是思考，群友看不到。"
+    "想说的多就拆成 2~3 条连着发（messages 传数组），像真人发 QQ 一样一条一条来。\n"
+)
+
+# 一次工具调用最多连发几条（防刷屏上限）
+_SEND_MAX_ITEMS = 3
+
+# 工具回执：发送成功后回给模型的话（继续压汇报腔）
+_SEND_OK_NOTE = "已发送。不要输出“已发送”类汇报，也别重复描述；想补充就再调一次，否则安静结束。"
+
+_SEND_MESSAGE_SPEC: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": "send_message",
+        "description": (
+            "把要说的话发到当前群里——这是唯一的发言方式；你写的正文只是思考，群友看不到。"
+            "messages 传字符串=发一条；传字符串数组=分多条连发（把话拆成短句分开说，最多 3 条）。"
+            "发出去后不用汇报、不用复述；想补充就再调一次，没话说就安静结束。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "messages": {
+                    "oneOf": [
+                        {"type": "string"},
+                        {"type": "array", "items": {"type": "string"}},
+                    ],
+                    "description": "要发送的内容：字符串=一条；数组=多条连发",
+                }
+            },
+            "required": ["messages"],
+        },
+    },
+}
+
 from core.config import get_config, normalize_provider_name
 from core.gate import is_allowed_group, render_message_text, should_reply_plain, strip_text_mention
 from plugins._shared import resolve_at_names, sender_name
@@ -103,8 +144,11 @@ def _format_reply(reply: llm.Reply) -> str:
     return out
 
 
-def _make_sticker_handler(bot: Bot, event: GroupMessageEvent):
-    """send_sticker 工具的执行器：挑图→发送→记账→返回结果文本。每轮回复最多发 1 张。"""
+def _make_sticker_handler(bot: Bot, event: GroupMessageEvent, state: dict | None = None):
+    """send_sticker 工具的执行器：挑图→发送→记账→返回结果文本。每轮回复最多发 1 张。
+
+    state：send_message 协议的共享状态（贴图成功也计入 "any" → 防重放守卫生效）。
+    """
     sent = {"n": 0}
 
     async def _handler(name: str, args: dict) -> str:
@@ -123,6 +167,8 @@ def _make_sticker_handler(bot: Bot, event: GroupMessageEvent):
         except Exception as exc:  # noqa: BLE001
             return f"表情包发送失败：{exc}"
         sent["n"] += 1
+        if state is not None:
+            state["any"] += 1  # 贴图也是"对外发过东西"：防重放守卫生效
         stickers.note_sent(event.group_id, str(row["md5"]))
         caption = str(row["caption"] or "")[:60]
         try:
@@ -136,14 +182,74 @@ def _make_sticker_handler(bot: Bot, event: GroupMessageEvent):
     return _handler
 
 
-async def _send_reply(send, event: GroupMessageEvent, text: str) -> None:
-    """发送聊天回复：带引用段（引用触发消息；QUOTE_REPLY_ENABLED=0 可关）。"""
+async def _send_reply(send, event: GroupMessageEvent, text: str, *, quote: bool = True) -> None:
+    """发送聊天回复：默认带引用段（引用触发消息；QUOTE_REPLY_ENABLED=0 可关）。
+
+    send_message 分条场景：首条 quote=True、后续条 quote=False（连发时只有第一条指明回哪句）。
+    """
     cfg = get_config()
     msg: str | Message = text
     mid = getattr(event, "message_id", None)
-    if cfg.quote_reply_enabled and mid:
+    if quote and cfg.quote_reply_enabled and mid:
         msg = MessageSegment.reply(int(mid)) + text
     await send(msg)
+
+
+def _make_send_message_handler(send, event: GroupMessageEvent, persona_name: str, state: dict):
+    """send_message 工具执行器：清洗→逐条发送（首条带引用）→入群上下文；返回给模型的回执。
+
+    state["text"]：工具发出的话的条数（双轨判定用——>0 时终答正文不再发送）；
+    state["any"] ：本次运行对外发送的总次数（含贴图；防重放守卫用）。
+    """
+
+    async def _handler(name: str, args: dict) -> str:
+        raw = args.get("messages")
+        if isinstance(raw, str):
+            items = [raw]
+        elif isinstance(raw, list):
+            items = [str(x) for x in raw]
+        else:
+            return "参数错误：messages 需要是字符串或字符串数组"
+        cfg = get_config()
+        cleaned: list[str] = []
+        for item in items:
+            raw_text = str(item).strip()
+            if not raw_text:
+                continue
+            t = textnorm.clean_reply(raw_text) if cfg.reply_clean_enabled else raw_text
+            t = t.strip()
+            # clean_reply 对"洗空"（全是旁白）会兜底回退"呃呃"；工具发送场景直接丢弃该条
+            if not t or (cfg.reply_clean_enabled and t == "呃呃" and raw_text != "呃呃"):
+                continue
+            cleaned.append(t)
+        if not cleaned:
+            return "没有可发送的内容（内容为空）"
+        truncated = len(cleaned) > _SEND_MAX_ITEMS
+        sent_n, failed = 0, []
+        for i, t in enumerate(cleaned[:_SEND_MAX_ITEMS]):
+            try:
+                await _send_reply(send, event, t, quote=(i == 0))
+                try:
+                    context.record_message(event.group_id, int(event.self_id), persona_name, t)
+                except Exception:  # noqa: BLE001 —— 记录失败不影响发送
+                    pass
+                sent_n += 1
+            except FinishedException:
+                # nonebot 控制流（调用方误传 matcher.finish 时）——绝不能当"发送失败"吞掉，
+                # 否则模型会以为没发出去而反复重试、造成刷屏重发
+                raise
+            except Exception as exc:  # noqa: BLE001 —— 单条失败不拖累其余条
+                failed.append(f"第{i + 1}条（{exc}）")
+        state["text"] += sent_n
+        state["any"] += sent_n
+        parts = [_SEND_OK_NOTE]
+        if failed:
+            parts.append(f"（{len(failed)} 条没发出去：{'；'.join(failed)}——发出去的不用重发，其余稍后再试或减少条数）")
+        if truncated:
+            parts.append(f"（一次最多发 {_SEND_MAX_ITEMS} 条，超出的没发，可以再调一次补上）")
+        return "".join(parts)
+
+    return _handler
 
 
 async def chat_flow(
@@ -201,8 +307,10 @@ async def chat_flow(
     elif mem_block:
         prompt = f"{mem_block}\n\n{text}"
     persona_name, persona_text = personas.resolve(event.group_id)
-    extra_tools = None
-    tool_handler = None
+    # send_message 协议共享状态：text=工具发言条数（双轨判定）；any=对外发送总数（防重放守卫）
+    send_state = {"text": 0, "any": 0}
+    specs: list[dict] = []
+    handlers: dict[str, Any] = {}
     blocks: list[str] = []
     if cfg.style_enabled:
         try:
@@ -234,21 +342,40 @@ async def chat_flow(
                 blocks.append(mood_block)
         except Exception:  # noqa: BLE001 —— 心情异常不影响聊天
             pass
+    # 工具发送走直发（bot.send）：不能经 matcher.finish —— finish 发送后会抛
+    # FinishedException 中断整个处理，而工具发送是"处理中间"的行为（模型可能还要
+    # 继续思考/多发几条），且被 except 吞掉会造成"假失败→模型反复重发"（实测事故）。
+    async def _direct_send(msg):
+        await bot.send(event, msg)
+
+    if cfg.send_protocol_enabled:
+        specs.append(_SEND_MESSAGE_SPEC)
+        handlers["send_message"] = _make_send_message_handler(_direct_send, event, persona_name, send_state)
     if cfg.sticker_enabled:
         try:
             if context.sticker_count() > 0:
-                extra_tools = [stickers.tool_spec()]
-                tool_handler = _make_sticker_handler(bot, event)
+                specs.append(stickers.tool_spec())
+                handlers["send_sticker"] = _make_sticker_handler(bot, event, send_state)
                 hint = stickers.chat_hint()
                 lib = stickers.library_summary(limit=12)
                 if lib:
                     hint = f"{hint}\n图库现有（挑 query 时参考）：{lib}"
                 blocks.append(hint)
         except Exception:  # noqa: BLE001 —— 贴图库异常不影响聊天
-            extra_tools, tool_handler = None, None
+            _log.opt(exception=True).warning("sticker setup failed [group {}]", event.group_id)
+
+    async def _dispatch(name: str, args: dict) -> str:
+        fn = handlers.get(name)
+        if fn is None:
+            return f"未知工具 {name}"
+        return await fn(name, args)
+
+    extra_tools = specs or None
+    tool_handler = _dispatch if handlers else None
     if extra_note:
         blocks.append(extra_note)
     dynamic_blocks = "\n\n".join(blocks)  # 动态块拼用户消息尾部（保 system 前缀缓存）
+    rules = f"{_PROTOCOL_RULES}{_CHAT_RULES}" if cfg.send_protocol_enabled else _CHAT_RULES
     try:
         reply = await llm.chat(
             prompt,
@@ -256,19 +383,32 @@ async def chat_flow(
             extra_tools=extra_tools,
             tool_handler=tool_handler,
             dynamic_blocks=dynamic_blocks,
-            extra_system=_CHAT_RULES,
+            extra_system=rules,
             system_prompt_override=persona_text,
+            is_replied=((lambda: send_state["any"] > 0) if cfg.send_protocol_enabled else None),
         )
     except llm.QuotaExceededError:
-        if not quiet_skip:
+        if send_state["any"] == 0 and not quiet_skip:
             await _send_reply(send, event, cfg.llm_quota_reply)
         return
     except Exception as exc:  # noqa: BLE001 —— 失败给用户一句人话，异常细节只进日志
         _log.opt(exception=True).warning("chat reply failed [group {}]: {}", event.group_id, exc)
-        if not quiet_skip:
+        if send_state["any"] == 0 and not quiet_skip:
             await _send_reply(send, event, cfg.llm_error_reply)
         return
+    if cfg.send_protocol_enabled and send_state["text"] > 0:
+        # 模型已通过 send_message 发言：终答正文只是思考，不再发送（协议轨道）
+        preview = " ".join(str(reply.text or "").split())[:80]
+        _log.info(
+            "chat reply [group {}] via send_message x{} (provider={}); 正文丢弃: {}",
+            event.group_id,
+            send_state["text"],
+            reply.provider,
+            preview,
+        )
+        return
     out = _format_reply(reply)
+    _log.info("chat reply [group {}] via fallback text (provider={})", event.group_id, reply.provider)
     try:
         # 记录机器人自己的回复，保持群上下文完整（bot 也是"群友"；记录名=该群人设名）
         context.record_message(event.group_id, int(event.self_id), persona_name, out)
