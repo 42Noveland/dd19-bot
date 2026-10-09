@@ -17,7 +17,7 @@ from nonebot.rule import Rule
 from core import context, vision
 from core.config import get_config
 from core.gate import is_allowed_group, render_message_text
-from plugins._shared import resolve_at_names, sender_name
+from plugins._shared import expand_forwards, resolve_at_names, sender_name
 
 _tasks: set[asyncio.Task] = set()
 
@@ -44,6 +44,10 @@ async def _record(bot: Bot, event: GroupMessageEvent) -> None:
                 media.append({"type": "image", "url": url, "file": file})
     names = await resolve_at_names(bot, event.group_id, message)
     text = render_message_text(message, str(bot.self_id), names)
+    # D 组 #12：合并转发展开（记录里存展开后的内容，上下文/记忆都可见）
+    fwd = await expand_forwards(bot, message)
+    if fwd:
+        text = f"{fwd}\n{text}".strip() if text else fwd
     if media:
         suffix = " ".join("[图片]" for _ in media)
         text = f"{text} {suffix}".strip() if text else suffix

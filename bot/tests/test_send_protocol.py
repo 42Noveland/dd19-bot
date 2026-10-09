@@ -300,7 +300,15 @@ def test_chat_flow_protocol_injects_spec(tmp_path, monkeypatch):
         sent.append(str(msg))
 
     asyncio.run(llm_chat.chat_flow(bot=_FakeBot(sent), event=_fake_event(), text="在吗", send=send))
-    assert seen["names"] == ["send_message", "send_reaction"]
+    assert seen["names"] == [
+        "send_message",
+        "send_reaction",
+        "read_history",
+        "search_history",
+        "remember",
+        "recall",
+        "set_reminder",
+    ]  # fetch_url 需搜索 key：本测试未配置故不注入
     assert callable(seen["is_replied"]) and seen["is_replied"]() is False
 
 

@@ -78,6 +78,16 @@ def _db() -> sqlite3.Connection:
                 updated_ts REAL NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_memories_group_user ON memories(group_id, user_id);
+            CREATE TABLE IF NOT EXISTS reminders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id INTEGER NOT NULL,
+                user_id INTEGER NOT NULL,
+                text TEXT NOT NULL,
+                remind_ts REAL NOT NULL,
+                created_ts REAL NOT NULL,
+                done INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_reminders_due ON reminders(done, remind_ts);
             CREATE TABLE IF NOT EXISTS mem_watermark (
                 group_id INTEGER PRIMARY KEY,
                 last_row_id INTEGER NOT NULL DEFAULT 0,
@@ -247,6 +257,80 @@ def message_exists(group_id: int, message_id: int | None) -> bool:
             (int(group_id), int(message_id)),
         ).fetchone()
     return row is not None
+
+
+def search_messages(group_id: int, keyword: str, limit: int = 20) -> list[dict]:
+    """按关键词搜本群消息（LIKE 包含匹配；按时间正序返回）。"""
+    kw = str(keyword or "").strip()
+    if not kw:
+        return []
+    with _lock:
+        rows = _db().execute(
+            "SELECT * FROM messages WHERE group_id=? AND text LIKE ? ORDER BY id DESC LIMIT ?",
+            (int(group_id), f"%{kw}%", int(limit)),
+        ).fetchall()
+    return [dict(r) for r in reversed(rows)]
+
+
+# ---------------- reminders（定时提醒 #13） ----------------
+
+
+def reminder_add(group_id: int, user_id: int, text: str, remind_ts: float) -> int:
+    """新增一条提醒，返回 id。"""
+    now = time.time()
+    with _lock:
+        conn = _db()
+        cur = conn.execute(
+            "INSERT INTO reminders(group_id, user_id, text, remind_ts, created_ts) VALUES(?,?,?,?,?)",
+            (int(group_id), int(user_id), str(text), float(remind_ts), now),
+        )
+        conn.commit()
+        return int(cur.lastrowid or 0)
+
+
+def reminder_due(now: float | None = None, limit: int = 10) -> list[dict]:
+    """到点未发送的提醒（按时间正序）。"""
+    ts = time.time() if now is None else float(now)
+    with _lock:
+        rows = _db().execute(
+            "SELECT * FROM reminders WHERE done=0 AND remind_ts<=? ORDER BY remind_ts LIMIT ?",
+            (ts, int(limit)),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def reminder_mark_done(reminder_id: int) -> None:
+    with _lock:
+        conn = _db()
+        conn.execute("UPDATE reminders SET done=1 WHERE id=?", (int(reminder_id),))
+        conn.commit()
+
+
+def reminder_list(group_id: int, user_id: int | None = None, *, pending_only: bool = True, limit: int = 20) -> list[dict]:
+    cond, args = "group_id=?", [int(group_id)]
+    if user_id is not None:
+        cond += " AND user_id=?"
+        args.append(int(user_id))
+    if pending_only:
+        cond += " AND done=0"
+    with _lock:
+        rows = _db().execute(
+            f"SELECT * FROM reminders WHERE {cond} ORDER BY remind_ts LIMIT ?",
+            (*args, int(limit)),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def reminder_cancel(reminder_id: int, group_id: int, user_id: int) -> bool:
+    """取消（仅本人、本群、未发送的）。"""
+    with _lock:
+        conn = _db()
+        cur = conn.execute(
+            "UPDATE reminders SET done=1 WHERE id=? AND group_id=? AND user_id=? AND done=0",
+            (int(reminder_id), int(group_id), int(user_id)),
+        )
+        conn.commit()
+        return bool(cur.rowcount)
 
 
 # ---------------- images（caption 缓存 / 贴图库底账） ----------------

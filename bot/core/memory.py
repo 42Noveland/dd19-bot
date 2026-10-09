@@ -275,6 +275,24 @@ def for_prompt(
     return "【你记得的事（供参考；别生硬复述，也别显得像在翻档案）】\n" + "\n".join(sections)
 
 
+def search(group_id: int, keyword: str = "", *, user_id: int | None = None, limit: int = 6) -> list[dict]:
+    """主动检索记忆（recall 工具）：关键词 LIKE（空=最近），可选限定某人。"""
+    cond, args = "group_id=?", [int(group_id)]
+    kw = str(keyword or "").strip()
+    if kw:
+        cond += " AND text LIKE ?"
+        args.append(f"%{kw}%")
+    if user_id is not None:
+        cond += " AND user_id=?"
+        args.append(int(user_id))
+    with context._lock:
+        rows = context._db().execute(
+            f"SELECT id, user_id, name, kind, text FROM memories WHERE {cond} ORDER BY updated_ts DESC LIMIT ?",
+            (*args, int(limit)),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def stats_for(group_id: int) -> dict:
     """某群记忆统计：user/group 条数 + 待处理消息数。"""
     gid = int(group_id)

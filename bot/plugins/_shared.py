@@ -34,3 +34,74 @@ def sender_name(event) -> str:
     card = str(getattr(sender, "card", "") or "").strip()
     nick = str(getattr(sender, "nickname", "") or "").strip()
     return card or nick or str(getattr(event, "user_id", "?"))
+
+
+def _plain_seg(seg) -> str:
+    """把转发节点里的一条内容段（dict 或 MessageSegment）压成纯文本。"""
+    if isinstance(seg, dict):
+        st = str(seg.get("type") or "")
+        sd = seg.get("data") or {}
+        if st == "text":
+            return str(sd.get("text") or "")
+        if st == "at":
+            return "@" + str(sd.get("qq") or "")
+        if st == "image":
+            return "[图片]"
+        if st == "face":
+            return "[表情]"
+        return ""
+    st = str(getattr(seg, "type", "") or "")
+    try:
+        if st == "text":
+            return str(seg.data.get("text") or "")
+        if st == "at":
+            return "@" + str(seg.data.get("qq") or "")
+        if st == "image":
+            return "[图片]"
+        if st == "face":
+            return "[表情]"
+    except Exception:  # noqa: BLE001
+        return ""
+    return ""
+
+
+async def expand_forwards(bot: Bot, message: Message, *, max_items: int = 12, max_chars: int = 80) -> str:
+    """把消息里的合并转发（forward 段）展开成文本（供记录/回复使用，#12）。
+
+    NapCat/OB11：forward.data.id → get_forward_msg → nodes（昵称 + 内容段）。
+    失败静默返回 ""（拿不到就不拿，不阻塞消息处理）；最多处理 2 个转发、每个 12 条。
+    """
+    ids: list[str] = []
+    for seg in message:
+        if getattr(seg, "type", "") == "forward":
+            fid = str(seg.data.get("id") or "").strip()
+            if fid:
+                ids.append(fid)
+    if not ids:
+        return ""
+    chunks: list[str] = []
+    for fid in ids[:2]:
+        try:
+            data = await bot.call_api("get_forward_msg", message_id=fid)
+        except Exception:  # noqa: BLE001 —— 拉不到转发内容就算了
+            continue
+        nodes = []
+        if isinstance(data, dict):
+            nodes = data.get("messages") or data.get("message") or []
+        lines: list[str] = []
+        for node in (nodes or [])[:max_items]:
+            d = node
+            if isinstance(node, dict) and node.get("type") == "node":
+                d = node.get("data") or {}
+            if not isinstance(d, dict):
+                continue
+            who = str(d.get("nickname") or d.get("user_id") or "").strip()
+            content = d.get("content") or d.get("message") or []
+            segs = content if isinstance(content, list) else [content]
+            t = "".join(_plain_seg(s) for s in segs)
+            t = " ".join(t.split())[:max_chars]
+            if t:
+                lines.append(f"{who}: {t}" if who else t)
+        if lines:
+            chunks.append("[转发记录]\n" + "\n".join(lines))
+    return "\n".join(chunks)[:1200]
