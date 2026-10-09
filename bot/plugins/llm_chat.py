@@ -195,6 +195,23 @@ async def _send_reply(send, event: GroupMessageEvent, text: str, *, quote: bool 
     await send(msg)
 
 
+async def _safe_send(send, event: GroupMessageEvent, text: str, *, quote: bool = True) -> bool:
+    """发送聊天文本、吞掉发送层异常（记 warning）：断连等失败不该炸出 traceback。
+
+    实测噪音：探针/连接断开时发送失败会把异常抛到 matcher 层刷 traceback（排查干扰大）；
+    发送失败调用方也无法补救，记日志即可。FinishedException（matcher.finish 控制流）
+    照常上抛——那是 nonebot 的正常结束语义，绝不能吞。
+    """
+    try:
+        await _send_reply(send, event, text, quote=quote)
+        return True
+    except FinishedException:
+        raise
+    except Exception as exc:  # noqa: BLE001 —— 发送失败没人能补救，记日志即可
+        _log.warning("send failed [group {}]: {}: {}", event.group_id, type(exc).__name__, exc)
+        return False
+
+
 def _make_send_message_handler(send, event: GroupMessageEvent, persona_name: str, state: dict):
     """send_message 工具执行器：清洗→逐条发送（首条带引用）→入群上下文；返回给模型的回执。
 
@@ -220,6 +237,9 @@ def _make_send_message_handler(send, event: GroupMessageEvent, persona_name: str
             t = t.strip()
             # clean_reply 对"洗空"（全是旁白）会兜底回退"呃呃"；工具发送场景直接丢弃该条
             if not t or (cfg.reply_clean_enabled and t == "呃呃" and raw_text != "呃呃"):
+                continue
+            # 兜底：DSML 等工具调用文本泄漏（实测事故）——跳过该条，绝不发乱码
+            if textnorm.looks_like_tool_leak(t):
                 continue
             cleaned.append(t)
         if not cleaned:
@@ -389,12 +409,12 @@ async def chat_flow(
         )
     except llm.QuotaExceededError:
         if send_state["any"] == 0 and not quiet_skip:
-            await _send_reply(send, event, cfg.llm_quota_reply)
+            await _safe_send(send, event, cfg.llm_quota_reply)
         return
     except Exception as exc:  # noqa: BLE001 —— 失败给用户一句人话，异常细节只进日志
         _log.opt(exception=True).warning("chat reply failed [group {}]: {}", event.group_id, exc)
         if send_state["any"] == 0 and not quiet_skip:
-            await _send_reply(send, event, cfg.llm_error_reply)
+            await _safe_send(send, event, cfg.llm_error_reply)
         return
     if cfg.send_protocol_enabled and send_state["text"] > 0:
         # 模型已通过 send_message 发言：终答正文只是思考，不再发送（协议轨道）
@@ -408,13 +428,21 @@ async def chat_flow(
         )
         return
     out = _format_reply(reply)
+    if textnorm.looks_like_tool_leak(out):
+        # 兜底：模型把工具调用序列化成了文本（DSML 泄漏，实测事故）——
+        # 拦截：绝不把乱码发进群、也不记进群上下文
+        preview = " ".join(out.split())[:80]
+        _log.warning("chat reply [group {}] 疑似工具调用文本泄漏，已拦截: {}", event.group_id, preview)
+        if not quiet_skip:
+            await _safe_send(send, event, cfg.llm_error_reply)
+        return
     _log.info("chat reply [group {}] via fallback text (provider={})", event.group_id, reply.provider)
     try:
         # 记录机器人自己的回复，保持群上下文完整（bot 也是"群友"；记录名=该群人设名）
         context.record_message(event.group_id, int(event.self_id), persona_name, out)
     except Exception:  # noqa: BLE001 —— 记录失败不影响回复
         pass
-    await _send_reply(send, event, out)
+    await _safe_send(send, event, out)
 
 
 async def _reply_chat(bot: Bot, matcher, event: GroupMessageEvent, text: str) -> None:

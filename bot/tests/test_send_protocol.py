@@ -301,3 +301,93 @@ def test_chat_flow_protocol_injects_spec(tmp_path, monkeypatch):
     asyncio.run(llm_chat.chat_flow(bot=_FakeBot(sent), event=_fake_event(), text="在吗", send=send))
     assert seen["names"] == ["send_message"]
     assert callable(seen["is_replied"]) and seen["is_replied"]() is False
+
+
+# ── DSML 工具调用文本泄漏兜底（实测事故）─────────────────────────────────────
+# 模型偶发把 send_message 调用序列化成 "<｜｜DSML｜｜ invoke name=...>" 文本（不走结构化
+# tool_calls）。若不拦截会被当正文发进群（朋友群实际发出过一条乱码）。兜底策略：
+# 命中即视为异常输出——绝不发进群、不记群上下文（非静默场景给一句人话）。
+
+_DSML_SAMPLE = (
+    '<｜｜DSML｜｜ calls>\n'
+    '<｜｜DSML｜｜ invoke name="send_message">\n'
+    '<｜｜DSML｜｜ parameter name="messages" string="false">"在吗"'
+)
+
+
+def test_looks_like_tool_leak_detection():
+    from core import textnorm
+
+    assert textnorm.looks_like_tool_leak(_DSML_SAMPLE) is True
+    assert textnorm.looks_like_tool_leak("<|tool▁calls|>") is True
+    assert textnorm.looks_like_tool_leak("今天天气不错哈哈") is False
+    assert textnorm.looks_like_tool_leak("") is False
+    assert textnorm.looks_like_tool_leak("DSML 是啥") is False  # 闲聊提到不带标记字符
+
+
+def test_chat_flow_dsml_leak_blocked(tmp_path, monkeypatch):
+    """兜底：DSML 正文不发群、不记上下文；非静默场景给一句人话。"""
+    _prep_flow(tmp_path, monkeypatch, _cfg())
+
+    async def fake_chat(prompt, **kw):
+        return llm.Reply(provider="x", text=_DSML_SAMPLE, reasoning="", truncated=False, total_tokens=0)
+
+    monkeypatch.setattr(llm_chat.llm, "chat", fake_chat)
+    sent: list[str] = []
+
+    async def send(msg):
+        sent.append(str(msg))
+
+    asyncio.run(llm_chat.chat_flow(bot=_FakeBot(sent), event=_fake_event(), text="在吗", send=send))
+    assert not any("DSML" in s for s in sent)       # 乱码没发出去
+    assert any("卡了一下" in s for s in sent)       # 失败路径=人话（LLM_ERROR_REPLY）
+    rows = context.recent_messages(709987676, limit=10)
+    assert not any("DSML" in str(r.get("text") or "") for r in rows)  # 也没记进群上下文
+
+
+def test_chat_flow_dsml_leak_quiet_silent(tmp_path, monkeypatch):
+    """auto 接话（quiet_skip）场景：DSML 泄漏 → 完全静默。"""
+    _prep_flow(tmp_path, monkeypatch, _cfg())
+
+    async def fake_chat(prompt, **kw):
+        return llm.Reply(provider="x", text=_DSML_SAMPLE, reasoning="", truncated=False, total_tokens=0)
+
+    monkeypatch.setattr(llm_chat.llm, "chat", fake_chat)
+    sent: list[str] = []
+
+    async def send(msg):
+        sent.append(str(msg))
+
+    asyncio.run(
+        llm_chat.chat_flow(bot=_FakeBot(sent), event=_fake_event(), text="在吗", send=send, quiet_skip=True)
+    )
+    assert sent == []
+
+
+def test_send_message_handler_skips_dsml(monkeypatch):
+    """handler：单条为 DSML 乱码时跳过该条；其余条照常发。"""
+    result, sent, state, _ = _make_handler(
+        monkeypatch, {"messages": ["好的", _DSML_SAMPLE]}
+    )
+    assert len(sent) == 1 and "好的" in sent[0]
+    assert state["text"] == 1
+    assert "DSML" not in "".join(sent)
+
+
+def test_chat_flow_send_failure_is_swallowed(tmp_path, monkeypatch):
+    """发送失败（断连等）记日志即可：不再抛异常炸出 traceback（实测噪音）。"""
+    _prep_flow(tmp_path, monkeypatch, _cfg())
+
+    async def fake_chat(prompt, **kw):
+        return llm.Reply(provider="x", text="正常回复", reasoning="", truncated=False, total_tokens=0)
+
+    monkeypatch.setattr(llm_chat.llm, "chat", fake_chat)
+    sent: list[str] = []
+
+    async def send(msg):
+        sent.append(str(msg))
+        raise RuntimeError("connection lost")
+
+    # 不应抛异常（旧版会把 RuntimeError 抛到 matcher 层炸 traceback）
+    asyncio.run(llm_chat.chat_flow(bot=_FakeBot(sent), event=_fake_event(), text="在吗", send=send))
+    assert len(sent) == 1  # 尝试过发送（失败被吞）

@@ -17,6 +17,22 @@ _BRACKET_CONTENT = re.compile(r"[（(【\[](?=[^）)】\]]*[\u4e00-\u9fff])[^）
 _EMPTY_FALLBACK = "呃呃"
 
 
+def looks_like_tool_leak(text: str) -> bool:
+    """检测模型把工具调用序列化成了文本（DeepSeek DSML 泄漏 / 旧式 tool▁calls 标记）。
+
+    实测事故：模型偶发输出 "<｜｜DSML｜｜ invoke name=\"send_message\">..." 这类伪工具调用
+    文本（未走结构化 tool_calls），若当正文发送会把乱码发进群。命中即视为异常输出：
+    绝不按正常回复放行（兜底策略——宁可不回/回一句人话，不发乱码）。
+    """
+    t = str(text or "")
+    if not t:
+        return False
+    low = t.lower()
+    if "dsml" in low and ("<" in t or "｜" in t):
+        return True
+    return "tool▁calls" in low
+
+
 def clean_reply(text: str) -> str:
     """清洗聊天回复文本（纯函数）：删含中文括号内容；清空后回退"呃呃"。"""
     t = str(text or "")
