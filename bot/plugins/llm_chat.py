@@ -182,6 +182,50 @@ def _make_sticker_handler(bot: Bot, event: GroupMessageEvent, state: dict | None
     return _handler
 
 
+def _should_quote(event: GroupMessageEvent) -> bool:
+    """引用克制（#3）：只在"指代可能不清"时引用。
+
+    - 触发消息是最近窗口里最后一条（后面没人接着说）→ 不引用（无歧义）
+    - 触发消息后已有新消息 / 不在窗口 / 查询失败 / 无记录 → 引用（一眼看清在回谁）
+    - QUOTE_REPLY_ENABLED=0 → 恒不引用
+    """
+    cfg = get_config()
+    mid = getattr(event, "message_id", None)
+    if not cfg.quote_reply_enabled or not mid:
+        return False
+    try:
+        rows = context.recent_messages(event.group_id, limit=8)
+    except Exception:  # noqa: BLE001 —— 查询失败 → 保守引用
+        return True
+    ids = [str(r.get("message_id")) for r in rows if r.get("message_id") is not None]
+    if not ids:
+        return True  # 无记录（新群/探针）→ 保守引用
+    return ids[-1] != str(mid)
+
+
+def _is_recent_repeat(group_id: int, self_id, text: str, *, window: float = 60.0, min_len: int = 8) -> bool:
+    """复读防护（#4）：近 window 秒内 bot 在群里发过完全相同的"长文本"。
+
+    短回应（"哈哈""？"）豁免——真人重复发短句是常态；只拦成句复读。
+    """
+    t = str(text or "").strip()
+    if len(t) < min_len:
+        return False
+    now = time.time()
+    try:
+        rows = context.recent_messages(group_id, limit=10)
+    except Exception:  # noqa: BLE001 —— 查询失败按不重复处理
+        return False
+    for r in rows:
+        if str(r.get("user_id")) != str(self_id):
+            continue
+        if now - float(r.get("ts") or 0.0) > window:
+            continue
+        if str(r.get("text") or "").strip() == t:
+            return True
+    return False
+
+
 async def _send_reply(send, event: GroupMessageEvent, text: str, *, quote: bool = True) -> None:
     """发送聊天回复：默认带引用段（引用触发消息；QUOTE_REPLY_ENABLED=0 可关）。
 
@@ -212,9 +256,12 @@ async def _safe_send(send, event: GroupMessageEvent, text: str, *, quote: bool =
         return False
 
 
-def _make_send_message_handler(send, event: GroupMessageEvent, persona_name: str, state: dict):
-    """send_message 工具执行器：清洗→逐条发送（首条带引用）→入群上下文；返回给模型的回执。
+def _make_send_message_handler(
+    send, event: GroupMessageEvent, persona_name: str, state: dict, *, quote_first: bool = True
+):
+    """send_message 工具执行器：清洗→逐条发送（首条按引用策略）→入群上下文；返回给模型的回执。
 
+    quote_first：首条是否带引用段（由 chat_flow 按"引用克制"判断后传入；后续条从不引用）。
     state["text"]：工具发出的话的条数（双轨判定用——>0 时终答正文不再发送）；
     state["any"] ：本次运行对外发送的总次数（含贴图；防重放守卫用）。
     """
@@ -229,6 +276,7 @@ def _make_send_message_handler(send, event: GroupMessageEvent, persona_name: str
             return "参数错误：messages 需要是字符串或字符串数组"
         cfg = get_config()
         cleaned: list[str] = []
+        seen: set[str] = set()
         for item in items:
             raw_text = str(item).strip()
             if not raw_text:
@@ -241,6 +289,10 @@ def _make_send_message_handler(send, event: GroupMessageEvent, persona_name: str
             # 兜底：DSML 等工具调用文本泄漏（实测事故）——跳过该条，绝不发乱码
             if textnorm.looks_like_tool_leak(t):
                 continue
+            # #4 复读防护：同批相同条目去重 + 近 60s 已发过的长文本跳过（视为已在群里）
+            if t in seen or _is_recent_repeat(event.group_id, int(event.self_id), t):
+                continue
+            seen.add(t)
             cleaned.append(t)
         if not cleaned:
             return "没有可发送的内容（内容为空）"
@@ -248,7 +300,7 @@ def _make_send_message_handler(send, event: GroupMessageEvent, persona_name: str
         sent_n, failed = 0, []
         for i, t in enumerate(cleaned[:_SEND_MAX_ITEMS]):
             try:
-                await _send_reply(send, event, t, quote=(i == 0))
+                await _send_reply(send, event, t, quote=(quote_first and i == 0))
                 try:
                     context.record_message(event.group_id, int(event.self_id), persona_name, t)
                 except Exception:  # noqa: BLE001 —— 记录失败不影响发送
@@ -362,6 +414,9 @@ async def chat_flow(
                 blocks.append(mood_block)
         except Exception:  # noqa: BLE001 —— 心情异常不影响聊天
             pass
+    # 引用克制（#3）：无歧义（触发消息即最新）时不带引用；指代可能不清才引用
+    quote_first = _should_quote(event)
+
     # 工具发送走直发（bot.send）：不能经 matcher.finish —— finish 发送后会抛
     # FinishedException 中断整个处理，而工具发送是"处理中间"的行为（模型可能还要
     # 继续思考/多发几条），且被 except 吞掉会造成"假失败→模型反复重发"（实测事故）。
@@ -370,7 +425,9 @@ async def chat_flow(
 
     if cfg.send_protocol_enabled:
         specs.append(_SEND_MESSAGE_SPEC)
-        handlers["send_message"] = _make_send_message_handler(_direct_send, event, persona_name, send_state)
+        handlers["send_message"] = _make_send_message_handler(
+            _direct_send, event, persona_name, send_state, quote_first=quote_first
+        )
     if cfg.sticker_enabled:
         try:
             if context.sticker_count() > 0:
@@ -436,13 +493,17 @@ async def chat_flow(
         if not quiet_skip:
             await _safe_send(send, event, cfg.llm_error_reply)
         return
+    if _is_recent_repeat(event.group_id, int(event.self_id), out):
+        # #4 复读防护：与近 60s 已发内容完全相同 → 静默（不重复刷群）
+        _log.info("chat reply [group {}] 与近 60s 已发内容重复，静默: {}", event.group_id, " ".join(out.split())[:60])
+        return
     _log.info("chat reply [group {}] via fallback text (provider={})", event.group_id, reply.provider)
     try:
         # 记录机器人自己的回复，保持群上下文完整（bot 也是"群友"；记录名=该群人设名）
         context.record_message(event.group_id, int(event.self_id), persona_name, out)
     except Exception:  # noqa: BLE001 —— 记录失败不影响回复
         pass
-    await _safe_send(send, event, out)
+    await _safe_send(send, event, out, quote=quote_first)
 
 
 async def _reply_chat(bot: Bot, matcher, event: GroupMessageEvent, text: str) -> None:

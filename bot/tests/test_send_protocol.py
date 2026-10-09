@@ -69,14 +69,15 @@ class _FakeBot:
         self.sink.append(str(msg))
 
 
-def _make_handler(monkeypatch, args, *, cfg=None, fail_on=None):
+def _make_handler(monkeypatch, args, *, cfg=None, fail_on=None, quote_first=True):
     cfg = cfg or _cfg()
     monkeypatch.setattr(core_config, "_config", cfg, raising=False)
     h = _Harness(fail_on=fail_on)
     records: list[tuple] = []
     monkeypatch.setattr(context, "record_message", lambda *a, **k: records.append(a))
+    monkeypatch.setattr(context, "recent_messages", lambda *a, **k: [])  # 复读检查查空
     state = {"text": 0, "any": 0}
-    handler = llm_chat._make_send_message_handler(h.send, _fake_event(), "十九", state)
+    handler = llm_chat._make_send_message_handler(h.send, _fake_event(), "十九", state, quote_first=quote_first)
     result = asyncio.run(handler("send_message", args))
     return result, h.sent, state, records
 
@@ -391,3 +392,98 @@ def test_chat_flow_send_failure_is_swallowed(tmp_path, monkeypatch):
     # 不应抛异常（旧版会把 RuntimeError 抛到 matcher 层炸 traceback）
     asyncio.run(llm_chat.chat_flow(bot=_FakeBot(sent), event=_fake_event(), text="在吗", send=send))
     assert len(sent) == 1  # 尝试过发送（失败被吞）
+
+
+# ── #3 引用克制：无歧义（触发消息=最新）不引用；指代可能不清才引用 ────────────
+
+
+def test_should_quote_rules(tmp_path, monkeypatch):
+    context.reset(tmp_path / "ctx.db")
+    monkeypatch.setattr(core_config, "_config", _cfg(), raising=False)
+
+    ev = _fake_event()  # message_id=1001
+    # 场景1：无任何记录（新群/探针）→ 保守引用
+    assert llm_chat._should_quote(ev) is True
+    # 场景2：触发消息就是最近最后一条 → 不引用（无歧义）
+    context.record_message(ev.group_id, ev.user_id, "小红", "在吗", message_id=1001)
+    assert llm_chat._should_quote(ev) is False
+    # 场景3：触发消息之后又有新消息 → 引用（指代可能不清）
+    context.record_message(ev.group_id, 944314364, "小明", "还有别的吗", message_id=1002)
+    assert llm_chat._should_quote(ev) is True
+
+
+def test_should_quote_disabled(tmp_path, monkeypatch):
+    context.reset(tmp_path / "ctx.db")
+    monkeypatch.setattr(core_config, "_config", _cfg(QUOTE_REPLY_ENABLED="0"), raising=False)
+    assert llm_chat._should_quote(_fake_event()) is False
+
+
+def test_send_message_quote_first_toggle(monkeypatch):
+    """quote_first=False（无歧义场景）时首条也不带引用段。"""
+    _, sent, state, _ = _make_handler(monkeypatch, {"messages": ["在的", "咋了"]}, quote_first=False)
+    assert len(sent) == 2
+    assert "reply" not in sent[0]  # 无引用段
+    assert sent[1] == "咋了"
+
+
+# ── #4 复读防护：同处理内相同条目去重；60s 跨处理同文（≥8字）跳过 ─────────────
+
+
+def test_send_message_in_batch_dedup(monkeypatch):
+    """同一次工具调用内完全相同的条目去重。"""
+    result, sent, state, _ = _make_handler(monkeypatch, {"messages": ["在吗", "在吗", "咋了"]})
+    assert len(sent) == 2
+    assert state["text"] == 2
+
+
+def test_is_recent_repeat_rules(monkeypatch):
+    import time as _time
+
+    now = _time.time()
+    rows = [{"user_id": 123456789, "text": "这是一条足够长的回复文本", "ts": now - 10}]
+    monkeypatch.setattr(llm_chat.context, "recent_messages", lambda gid, limit=10: rows)
+    assert llm_chat._is_recent_repeat(1, 123456789, "这是一条足够长的回复文本") is True
+    assert llm_chat._is_recent_repeat(1, 123456789, "这是一条足够长的回复文本。") is False  # 不完全同
+    assert llm_chat._is_recent_repeat(1, 123456789, "哈哈") is False  # 短回应豁免
+    rows[0]["ts"] = now - 300
+    assert llm_chat._is_recent_repeat(1, 123456789, "这是一条足够长的回复文本") is False  # 超出窗口
+    rows[0]["ts"] = now - 10
+    assert llm_chat._is_recent_repeat(1, 999, "这是一条足够长的回复文本") is False  # 别的发言人
+
+
+def test_send_message_cross_repeat_skipped(monkeypatch):
+    """近 60s 已发过的长文本 → 该条跳过（视为已在群里）；全被滤时空回执。"""
+    import time as _time
+
+    rows = [{"user_id": 123456789, "text": "这是一条足够长的回复文本", "ts": _time.time() - 10}]
+    monkeypatch.setattr(core_config, "_config", _cfg(), raising=False)
+    monkeypatch.setattr(context, "record_message", lambda *a, **k: None)
+    monkeypatch.setattr(context, "recent_messages", lambda *a, **k: rows)
+    h = _Harness()
+    state = {"text": 0, "any": 0}
+    handler = llm_chat._make_send_message_handler(h.send, _fake_event(), "十九", state)
+    result = asyncio.run(handler("send_message", {"messages": ["这是一条足够长的回复文本"]}))
+    assert h.sent == []  # 没重复发
+    assert "没有可发送" in result
+    assert state["text"] == 0
+
+
+def test_chat_flow_fallback_repeat_silent(tmp_path, monkeypatch):
+    """终答正文与近 60s 已发内容完全相同（长文本）→ 静默（不重复刷）。"""
+    import time as _time
+
+    _prep_flow(tmp_path, monkeypatch, _cfg())
+    ev = _fake_event()
+    context.record_message(ev.group_id, ev.self_id, "十九", "这是一条足够长的回复文本", ts=_time.time() - 5)
+
+    async def fake_chat(prompt, **kw):
+        return llm.Reply(provider="x", text="这是一条足够长的回复文本", reasoning="", truncated=False, total_tokens=0)
+
+    monkeypatch.setattr(llm_chat.llm, "chat", fake_chat)
+    sent: list[str] = []
+
+    async def send(msg):
+        sent.append(str(msg))
+
+    asyncio.run(llm_chat.chat_flow(bot=_FakeBot(sent), event=ev, text="在吗", send=send))
+    assert sent == []  # 重复内容静默
