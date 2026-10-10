@@ -312,6 +312,74 @@ def test_chat_flow_protocol_injects_spec(tmp_path, monkeypatch):
     assert callable(seen["is_replied"]) and seen["is_replied"]() is False
 
 
+# ── per-sender 跟聊窗口：成功回复后为触发者开窗 ──────────────────────────────
+
+def test_chat_flow_success_opens_followup_window(tmp_path, monkeypatch):
+    """fallback 文本轨发送成功后：为触发消息的发送者开跟聊窗口。"""
+    from plugins import _shared
+
+    _shared.clear_followups()
+    _prep_flow(tmp_path, monkeypatch, _cfg())
+
+    async def fake_chat(prompt, **kw):
+        return llm.Reply(provider="x", text="好呀", reasoning="", truncated=False, total_tokens=0)
+
+    monkeypatch.setattr(llm_chat.llm, "chat", fake_chat)
+    sent: list[str] = []
+
+    async def send(msg):
+        sent.append(str(msg))
+
+    ev = _fake_event()
+    asyncio.run(llm_chat.chat_flow(bot=_FakeBot(sent), event=ev, text="在吗", send=send))
+    assert sent  # 确实发出去了
+    assert _shared.in_followup(ev.group_id, ev.user_id) is True
+
+
+def test_chat_flow_tool_reply_opens_followup_window(tmp_path, monkeypatch):
+    """协议轨（send_message 工具发送）成功后同样开窗。"""
+    from plugins import _shared
+
+    _shared.clear_followups()
+    _prep_flow(tmp_path, monkeypatch, _cfg())
+
+    async def fake_chat(prompt, **kw):
+        await kw["tool_handler"]("send_message", {"messages": "在呢"})
+        return llm.Reply(provider="x", text="", reasoning="", truncated=False, total_tokens=0)
+
+    monkeypatch.setattr(llm_chat.llm, "chat", fake_chat)
+    sent: list[str] = []
+
+    async def send(msg):
+        sent.append(str(msg))
+
+    ev = _fake_event()
+    asyncio.run(llm_chat.chat_flow(bot=_FakeBot(sent), event=ev, text="在吗", send=send))
+    assert _shared.in_followup(ev.group_id, ev.user_id) is True
+
+
+def test_chat_flow_error_reply_no_followup_window(tmp_path, monkeypatch):
+    """错误提示轨（llm_error_reply）不算回复：不开窗。"""
+    from plugins import _shared
+
+    _shared.clear_followups()
+    _prep_flow(tmp_path, monkeypatch, _cfg())
+
+    async def fake_chat(prompt, **kw):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(llm_chat.llm, "chat", fake_chat)
+    sent: list[str] = []
+
+    async def send(msg):
+        sent.append(str(msg))
+
+    ev = _fake_event()
+    asyncio.run(llm_chat.chat_flow(bot=_FakeBot(sent), event=ev, text="在吗", send=send))
+    assert sent  # 错误提示发出去了
+    assert _shared.in_followup(ev.group_id, ev.user_id) is False
+
+
 # ── DSML 工具调用文本泄漏兜底（实测事故）─────────────────────────────────────
 # 模型偶发把 send_message 调用序列化成 "<｜｜DSML｜｜ invoke name=...>" 文本（不走结构化
 # tool_calls）。若不拦截会被当正文发进群（朋友群实际发出过一条乱码）。兜底策略：

@@ -1,6 +1,8 @@
 """插件共享小工具（以 _ 开头：不会被 nonebot.load_plugins 当插件加载）。"""
 from __future__ import annotations
 
+import time
+
 from nonebot.adapters.onebot.v11 import Bot, Message
 
 _AT_NAME_CACHE: dict[tuple[int, str], str] = {}
@@ -34,6 +36,44 @@ def sender_name(event) -> str:
     card = str(getattr(sender, "card", "") or "").strip()
     nick = str(getattr(sender, "nickname", "") or "").strip()
     return card or nick or str(getattr(event, "user_id", "?"))
+
+
+# ---------------- 跟聊窗口（per-sender：谁被回复谁进窗口） ----------------
+# 机制参考 qq-agent 的 short-followup：bot 成功回复某人后开窗，窗口内该人的
+# 后续消息跳过概率门必判——"聊到一半不理人"发生在对话对手身上，不是全群；
+# 别人插话不受影响（仍走正常概率门）。
+# 内存态、重启清空（窗口只有几分钟，无需持久化）。
+
+FOLLOWUP_WINDOW = 120.0  # 秒
+
+_followups: dict[tuple[int, int], float] = {}
+
+
+def note_replied(group_id: int, user_id: int, window: float = FOLLOWUP_WINDOW) -> None:
+    """bot 成功回复了谁：为 (群, 人) 开/续跟聊窗口。"""
+    try:
+        key = (int(group_id), int(user_id))
+    except (TypeError, ValueError):
+        return
+    _followups[key] = time.time() + float(window)
+    if len(_followups) > 2000:  # 防无限增长：清掉已过期的
+        now = time.time()
+        for k in [k for k, v in _followups.items() if v < now]:
+            _followups.pop(k, None)
+
+
+def in_followup(group_id: int, user_id: int) -> bool:
+    """该人是否处在跟聊窗口内（窗口内其消息跳过概率门必判）。"""
+    try:
+        key = (int(group_id), int(user_id))
+    except (TypeError, ValueError):
+        return False
+    return time.time() < _followups.get(key, 0.0)
+
+
+def clear_followups() -> None:
+    """清空全部窗口（测试/重置用）。"""
+    _followups.clear()
 
 
 def _plain_seg(seg) -> str:

@@ -1,8 +1,10 @@
-"""auto_chat 预筛行为：无冷却设计。
+"""auto_chat 预筛行为：无冷却设计 + per-sender 跟聊窗口。
 
 - 每群冷却 AUTO_REPLY_COOLDOWN=0 时不拦任何消息；
 - 旧的"90 秒内刚说过话不抢话"硬保护已移除——bot 刚说完话，新消息仍进入接话判定
   （防止"刚回过一句就不再理人"的体感；是否真的接由 LLM 判定宁缺毋滥）。
+- 跟聊窗口（per-sender，参考 qq-agent short-followup）：bot 回复过的人，
+  _shared.FOLLOWUP_WINDOW 秒内其消息跳过概率门必判；别人不受影响。
 """
 import asyncio
 import time
@@ -17,7 +19,7 @@ nonebot._driver = types.SimpleNamespace(config=Config())
 
 from core import config as core_config  # noqa: E402
 from core.config import load_config  # noqa: E402
-from plugins import auto_chat  # noqa: E402
+from plugins import _shared, auto_chat  # noqa: E402
 
 
 def _cfg(**over):
@@ -46,10 +48,16 @@ def _fake_event(text: str = "大家明天出去玩吗"):
     return ev
 
 
-def _run_consider(monkeypatch, cfg, recent, *, last_auto=None):
-    """跑一遍 _consider，返回被调度的接话判定列表。"""
+def _run_consider(monkeypatch, cfg, recent, *, last_auto=None, followup=None):
+    """跑一遍 _consider，返回被调度的接话判定列表。
+
+    followup=(gid, uid[, window])：先清窗口，再为该 (群,人) 开窗（模拟 bot 刚回复过）。
+    """
     monkeypatch.setattr(core_config, "_config", cfg, raising=False)
     monkeypatch.setattr(auto_chat.context, "recent_messages", lambda gid, limit=8: recent)
+    _shared.clear_followups()
+    if followup:
+        _shared.note_replied(*followup)
     called: list[int] = []
 
     async def fake_judge(bot, event):
@@ -69,30 +77,33 @@ def _run_consider(monkeypatch, cfg, recent, *, last_auto=None):
     return called
 
 
-def test_recent_bot_message_does_not_block(monkeypatch):
-    """bot 刚说过话 + 无冷却：新消息仍进入接话判定（旧 90s"不抢话"保护已删）。"""
-    now = time.time()
-    recent = [
-        {"user_id": 180517257, "ts": now - 3, "message_id": 999},  # bot 3 秒前刚说过话
-        {"user_id": 944314363, "ts": now - 5, "message_id": 1000},
-    ]
-    called = _run_consider(monkeypatch, _cfg(), recent)
+def test_plain_message_still_judged_without_window(monkeypatch):
+    """无跟聊窗口：chance=1.0 普通消息照常进入判定（预筛不拦）。"""
+    called = _run_consider(monkeypatch, _cfg(), [])
     assert called == [1001]
 
 
-def test_bot_recent_message_forces_judge(monkeypatch):
-    """对话延续窗口：bot 120s 内在本群说过话 → 跳过概率门、必判（即使机会=0）。"""
-    now = time.time()
-    recent = [{"user_id": 180517257, "ts": now - 30, "message_id": 999}]
-    called = _run_consider(monkeypatch, _cfg(AUTO_REPLY_CHANCE="0.0"), recent)
+def test_followup_same_sender_forces_judge(monkeypatch):
+    """per-sender 窗口：bot 回复过的人，窗口内其消息跳过概率门必判（chance=0 也判）。"""
+    called = _run_consider(
+        monkeypatch, _cfg(AUTO_REPLY_CHANCE="0.0"), [], followup=(709987676, 944314363)
+    )
     assert called == [1001]
 
 
-def test_stale_bot_message_does_not_force(monkeypatch):
-    """窗口外（>120s）的 bot 消息不触发必判：机会=0 时不判。"""
-    now = time.time()
-    recent = [{"user_id": 180517257, "ts": now - 600, "message_id": 999}]
-    called = _run_consider(monkeypatch, _cfg(AUTO_REPLY_CHANCE="0.0"), recent)
+def test_followup_other_sender_not_forced(monkeypatch):
+    """窗口只认被回复的人：窗口里记的是别人时，chance=0 不判。"""
+    called = _run_consider(
+        monkeypatch, _cfg(AUTO_REPLY_CHANCE="0.0"), [], followup=(709987676, 555555555)
+    )
+    assert called == []
+
+
+def test_followup_expired_not_forced(monkeypatch):
+    """窗口过期（负时长）后不再必判：chance=0 不判。"""
+    called = _run_consider(
+        monkeypatch, _cfg(AUTO_REPLY_CHANCE="0.0"), [], followup=(709987676, 944314363, -1)
+    )
     assert called == []
 
 

@@ -61,6 +61,12 @@
   - 专属强化：**防客服腔 / 防鸡汤 / 防查户口式关心**（她最容易滑向的三类 AI 味）；场景对照 6 组（加班/报错/身份/被怼/被冷落/失眠）。
   - 回归：`list_personas` 识别正常（stem=persona-elena, name=Elena）；全量 177 绿；按 mtime 热更新——朋友群下条消息起生效（无需重启）。
   - 待观察：朋友群实际观感（客服腔/鸡汤是否减少、慢热语感是否保持）。
+- **2026-10-10 · per-sender 跟聊窗口（移植 qq-agent short-followup）**：
+  - `plugins/_shared.py`：跟聊窗口（`FOLLOWUP_WINDOW=120s`；`note_replied`/`in_followup`/`clear_followups`，内存态重启清空、2000 条上限自动清过期）。
+  - `auto_chat`：必判触发从"全群窗口（查 bot 最近群消息）"升级为 **per-sender**——谁被回复谁进窗口，别人插话仍走正常概率门；窗口内触发时注入更贴的 `_AUTO_FOLLOWUP_NOTE`（"接着刚才的话题自然应答"）；废弃的 `_bot_spoke_recently` 已删除。
+  - `llm_chat`：`chat_flow` 成功发送后 `note_replied`（协议轨 + fallback 轨；错误提示轨不开窗；发送失败不开窗）。
+  - 回归：+4 测试全量 **185 绿**；e2e **ALL PASS**；36 插件加载正常。
+  - 备注：当前 `AUTO_REPLY_CHANCE=1.0`（所有消息必判），per-sender 的精确性在 chance<1 时体现；窗口注记（更自然的接话措辞）即时生效。
 - （后续小项完成后在此追加）
 
 ## 备注

@@ -206,7 +206,7 @@ _REMIND_SPEC: dict[str, Any] = {
 
 from core.config import get_config, normalize_provider_name
 from core.gate import is_allowed_group, render_message_text, should_reply_plain, strip_text_mention
-from plugins._shared import expand_forwards, resolve_at_names, sender_name
+from plugins._shared import expand_forwards, note_replied, resolve_at_names, sender_name
 
 
 async def _allowed(event: Event) -> bool:
@@ -785,6 +785,7 @@ async def chat_flow(
             reply.provider,
             preview,
         )
+        note_replied(event.group_id, event.user_id)  # per-sender 跟聊窗口
         return
     out = _format_reply(reply)
     if textnorm.looks_like_tool_leak(out):
@@ -805,7 +806,8 @@ async def chat_flow(
         context.record_message(event.group_id, int(event.self_id), persona_name, out)
     except Exception:  # noqa: BLE001 —— 记录失败不影响回复
         pass
-    await _safe_send(send, event, out, quote=quote_first)
+    if await _safe_send(send, event, out, quote=quote_first):
+        note_replied(event.group_id, event.user_id)  # per-sender 跟聊窗口（发送成功才算）
 
 
 async def _reply_chat(bot: Bot, matcher, event: GroupMessageEvent, text: str) -> None:

@@ -8,8 +8,9 @@
 - 判断与回复全在后台任务里跑，不阻塞事件处理；同一群同一时刻只判断一条（_inflight）。
 - 判断材料 = 最近群聊记录 + 新消息（addressed=False 措辞）。
 - 接话冷却走 AUTO_REPLY_COOLDOWN 秒（**0=不冷却**，默认 0）；失败一律静默（不打扰群友）。
-- 对话延续窗口：bot 刚在本群说完话（_CONTINUATION_WINDOW 秒内），新消息必判——
-  解决"聊到一半不理人"。
+- 跟聊窗口（per-sender，机制参考 qq-agent short-followup）：bot 成功回复某人后
+  _shared.FOLLOWUP_WINDOW 秒内，该人的后续消息必判（跳过概率门）——解决"聊到一半
+  不理人"；别人插话不受影响（仍走正常概率门）。
 """
 from __future__ import annotations
 
@@ -25,14 +26,14 @@ from nonebot.rule import Rule
 from core import context, debounce, llm, personas
 from core.config import get_config
 from core.gate import is_allowed_group, mentions_name, parse_judge_verdict, render_message_text
-from plugins._shared import resolve_at_names, sender_name
+from plugins._shared import in_followup, resolve_at_names, sender_name
 
 _tasks: set[asyncio.Task] = set()
 _last_auto: dict[int, float] = {}
 _inflight: set[int] = set()
 
-# 对话延续窗口（秒）：bot 说完话后这么久内，新消息必判（跳过概率门）
-_CONTINUATION_WINDOW = 120.0
+# 跟聊窗口时长在 plugins/_shared.py（FOLLOWUP_WINDOW=120s）——bot 成功回复某人后，
+# 窗口内该人的消息必判。本模块不再自己维护窗口。
 
 _JUDGE_RULES = (
     "【任务】你是群聊成员「{name}」。下面给你群聊最近的记录和一条新消息。"
@@ -48,6 +49,11 @@ _JUDGE_RULES = (
 _AUTO_NOTE = (
     "【场合】这条新消息没有人 @ 你，是你自己主动想接一句。要像群里朋友随口插话："
     "一两句、自然、不突兀；不用客套和客服腔；没把握就少说。"
+)
+
+_AUTO_FOLLOWUP_NOTE = (
+    "【场合】这位群友刚跟你聊过，这条大概率是接着你们刚才的话题——像朋友接着聊那样"
+    "自然应答，别客套、别重新起头；若他其实在与别人说话，可以安静结束。"
 )
 
 
@@ -70,21 +76,6 @@ def _bot_names(cfg, group_id: int) -> list[str]:
     return names
 
 
-def _bot_spoke_recently(group_id: int, self_id: str, window: float = _CONTINUATION_WINDOW) -> bool:
-    """最近 window 秒内机器人在本群说过话（含回复/表情包记录）。
-
-    注意用途：**必判触发**（对话延续窗口——bot 刚说完话，新消息大概率是接话/回答，
-    跳过概率门必判，接不接仍由 judge 把关）。
-    历史教训：曾以"不抢话"拦截身份存在（90s 内说过话就不接），实测导致"刚回过话就
-    不理人"，已删除——本函数回归时用途已反转，勿再当拦截器用。
-    """
-    now = time.time()
-    for row in context.recent_messages(group_id, limit=8):
-        if str(row.get("user_id")) == str(self_id):
-            return now - float(row.get("ts") or 0.0) < window
-    return False
-
-
 @auto_reply.handle()
 async def _consider(bot: Bot, event: GroupMessageEvent) -> None:
     cfg = get_config()
@@ -100,8 +91,8 @@ async def _consider(bot: Bot, event: GroupMessageEvent) -> None:
     now = time.time()
     if gid in _inflight or now - _last_auto.get(gid, 0.0) < cfg.auto_reply_cooldown:
         return
-    # 必判：被点名，或处在对话延续窗口（bot 刚说完话）——否则走概率门
-    must_judge = mentions_name(probe, _bot_names(cfg, gid)) or _bot_spoke_recently(gid, str(bot.self_id))
+    # 必判：被点名，或处在跟聊窗口（bot 刚回复过这个人）——否则走概率门
+    must_judge = mentions_name(probe, _bot_names(cfg, gid)) or in_followup(gid, event.user_id)
     if not must_judge and random.random() >= cfg.auto_reply_chance:
         return
     task = asyncio.create_task(_judge_and_maybe_reply(bot, event))
@@ -157,7 +148,8 @@ async def _judge_and_maybe_reply(bot: Bot, event: GroupMessageEvent) -> None:
         async def _send(msg):
             await bot.send(event, msg)
 
-        await chat_flow(bot, event, text, _send, quiet_skip=True, extra_note=_AUTO_NOTE, addressed=False)
+        note = _AUTO_FOLLOWUP_NOTE if in_followup(gid, event.user_id) else _AUTO_NOTE
+        await chat_flow(bot, event, text, _send, quiet_skip=True, extra_note=note, addressed=False)
     except llm.QuotaExceededError:
         return
     except Exception as exc:  # noqa: BLE001 —— 主动接话失败保持安静
