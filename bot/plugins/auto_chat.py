@@ -1,16 +1,20 @@
 """决策层：群聊主动接话（不@也会回复）。
 
 流程（priority=48；仅 LLM_REPLY_MODE=mention 时生效，@ 消息仍由 llm_chat 处理）：
-  廉价预筛（非@/非命令/非自己消息/每群冷却）→ 概率门（被点名、或对话延续窗口内则必判）
-  → 异步 LLM 判断「接/不接」（宁缺毋滥）→ 复用聊天核心静默回复（带引用，可配表情包）。
+  廉价预筛（非@/非命令/非自己消息）→ 接话冷却（接话后静默期，仅被点名可穿透）
+  → 概率门（被点名、或对话延续窗口内则必判）→ 异步 LLM 判断「接/不接」（宁缺毋滥）
+  → 复用聊天核心静默回复（带引用，可配表情包）。
 
 设计要点：
 - 判断与回复全在后台任务里跑，不阻塞事件处理；同一群同一时刻只判断一条（_inflight）。
 - 判断材料 = 最近群聊记录 + 新消息（addressed=False 措辞）。
-- 接话冷却走 AUTO_REPLY_COOLDOWN 秒（**0=不冷却**，默认 0）；失败一律静默（不打扰群友）。
+- 接话冷却走 AUTO_REPLY_COOLDOWN 秒（默认 240，0=不冷却）——接话后的静默期内，非点名
+  消息不再接话（跟聊窗口也拦：实测"人机对线"场景会无限连发，降频优先）；被点名可穿透。
+- 失败一律静默（不打扰群友）。
 - 跟聊窗口（per-sender，机制参考 qq-agent short-followup）：bot 成功回复某人后
   _shared.FOLLOWUP_WINDOW 秒内，该人的后续消息必判（跳过概率门）——解决"聊到一半
-  不理人"；别人插话不受影响（仍走正常概率门）。
+  不理人"；别人插话不受影响（仍走正常概率门）。注：接话冷却（默认 240s ≥ 窗口
+  120s）期间不生效，实际作用域为"冷却期之外的窗口"（留作降频后的再平衡旋钮）。
 """
 from __future__ import annotations
 
@@ -39,10 +43,12 @@ _JUDGE_RULES = (
     "【任务】你是群聊成员「{name}」。下面给你群聊最近的记录和一条新消息。"
     "判断：这条新消息，你要不要主动接一句话？\n"
     "接话原则：\n"
-    "- 大多数消息不用接。只有接话显得自然、有趣、有帮助，或有人在说你/问你/聊到你熟悉的话题时，才接。\n"
-    "- 别人在互相聊天、内容平淡、话题与你无关的，不要接；但有人像是在接你的话、回答你的问题、"
-    "或顺着你刚才聊的话题说时，可以接。\n"
-    "- 拿不准就不接——宁可少接，不要打扰群友。\n"
+    "- 默认不接。核心标准：这条消息是不是在等你说点什么？不是在等你——"
+    "别人互相聊天、聊的跟你无关、随口感叹——就别接。\n"
+    "- 有人在说你、问你、逗你、接你的梗、顺着你刚聊的话题，可以接；但要自然，不硬凑。\n"
+    "- 你刚连续接过几条的，缓一缓：接下来的热闹先看着，让别人聊——真人不粘人。\n"
+    "- 纯附和、纯看热闹（哈哈/？/表情）、别人互相寒暄或互怼的余波，不要接。\n"
+    "- 拿不准就不接——宁可少接，不要打扰群友；大多数时候你应该是「不接」。\n"
     "输出：第一行只写「接」或「不接」，不要写别的；如愿意可在第二行给一句理由（仅供日志）。"
 )
 
@@ -89,10 +95,13 @@ async def _consider(bot: Bot, event: GroupMessageEvent) -> None:
         return
     gid = event.group_id
     now = time.time()
-    if gid in _inflight or now - _last_auto.get(gid, 0.0) < cfg.auto_reply_cooldown:
+    if gid in _inflight:
         return
-    # 必判：被点名，或处在跟聊窗口（bot 刚回复过这个人）——否则走概率门
-    must_judge = mentions_name(probe, _bot_names(cfg, gid)) or in_followup(gid, event.user_id)
+    named = mentions_name(probe, _bot_names(cfg, gid))
+    must_judge = named or in_followup(gid, event.user_id)
+    # 接话冷却：接话后的静默期——仅被点名可穿透（跟聊窗口不豁免：降"人机对线"刷屏）
+    if not named and now - _last_auto.get(gid, 0.0) < cfg.auto_reply_cooldown:
+        return
     if not must_judge and random.random() >= cfg.auto_reply_chance:
         return
     task = asyncio.create_task(_judge_and_maybe_reply(bot, event))

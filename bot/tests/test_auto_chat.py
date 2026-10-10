@@ -1,10 +1,10 @@
-"""auto_chat 预筛行为：无冷却设计 + per-sender 跟聊窗口。
+"""auto_chat 预筛行为：接话冷却（点名穿透）+ per-sender 跟聊窗口。
 
-- 每群冷却 AUTO_REPLY_COOLDOWN=0 时不拦任何消息；
-- 旧的"90 秒内刚说过话不抢话"硬保护已移除——bot 刚说完话，新消息仍进入接话判定
-  （防止"刚回过一句就不再理人"的体感；是否真的接由 LLM 判定宁缺毋滥）。
+- 每群冷却 AUTO_REPLY_COOLDOWN>0 时：接话后的静默期内，非点名消息（含跟聊窗口）
+  不再接话（防"人机对线"刷屏）；被点名可穿透。0=不冷却。
 - 跟聊窗口（per-sender，参考 qq-agent short-followup）：bot 回复过的人，
   _shared.FOLLOWUP_WINDOW 秒内其消息跳过概率门必判；别人不受影响。
+  注：默认冷却 240s ≥ 窗口 120s，静默期内窗口不生效（冷却期外仍有效）。
 """
 import asyncio
 import time
@@ -48,10 +48,12 @@ def _fake_event(text: str = "大家明天出去玩吗"):
     return ev
 
 
-def _run_consider(monkeypatch, cfg, recent, *, last_auto=None, followup=None):
+def _run_consider(monkeypatch, cfg, recent, *, last_auto=None, followup=None,
+                  text="大家明天出去玩吗"):
     """跑一遍 _consider，返回被调度的接话判定列表。
 
     followup=(gid, uid[, window])：先清窗口，再为该 (群,人) 开窗（模拟 bot 刚回复过）。
+    text：触发消息文本（点名场景用）。
     """
     monkeypatch.setattr(core_config, "_config", cfg, raising=False)
     monkeypatch.setattr(auto_chat.context, "recent_messages", lambda gid, limit=8: recent)
@@ -70,7 +72,7 @@ def _run_consider(monkeypatch, cfg, recent, *, last_auto=None, followup=None):
         auto_chat._last_auto.update(last_auto)
 
     async def go():
-        await auto_chat._consider(_fake_bot(), _fake_event())
+        await auto_chat._consider(_fake_bot(), _fake_event(text))
         await asyncio.sleep(0.05)  # 让 create_task 调度的判定跑完
 
     asyncio.run(go())
@@ -107,8 +109,8 @@ def test_followup_expired_not_forced(monkeypatch):
     assert called == []
 
 
-def test_cooldown_still_respected_when_configured(monkeypatch):
-    """冷却>0 时仍拦（配置项语义保留：0=不冷却）。"""
+def test_cooldown_blocks_plain_message(monkeypatch):
+    """冷却>0：接话后的静默期内，普通消息不接（降频语义）。"""
     called = _run_consider(
         monkeypatch,
         _cfg(AUTO_REPLY_COOLDOWN="9999"),
@@ -116,6 +118,42 @@ def test_cooldown_still_respected_when_configured(monkeypatch):
         last_auto={709987676: time.time()},  # 刚接过话
     )
     assert called == []
+
+
+def test_cooldown_blocks_followup_too(monkeypatch):
+    """冷却期内跟聊窗口不豁免：被回复过的人说话也拦（防"人机对线"刷屏）。"""
+    called = _run_consider(
+        monkeypatch,
+        _cfg(AUTO_REPLY_COOLDOWN="9999"),
+        [],
+        last_auto={709987676: time.time()},
+        followup=(709987676, 944314363),
+    )
+    assert called == []
+
+
+def test_cooldown_named_message_penetrates(monkeypatch):
+    """冷却期内被点名（文本点名）→ 穿透冷却，照常判定。"""
+    monkeypatch.setattr(auto_chat.personas, "name_for", lambda gid: "十九")
+    called = _run_consider(
+        monkeypatch,
+        _cfg(AUTO_REPLY_COOLDOWN="9999"),
+        [],
+        last_auto={709987676: time.time()},
+        text="十九在吗，帮我看个东西",
+    )
+    assert called == [1001]
+
+
+def test_cooldown_expired_judges_normally(monkeypatch):
+    """冷却期已过 → 普通消息照常进入判定。"""
+    called = _run_consider(
+        monkeypatch,
+        _cfg(AUTO_REPLY_COOLDOWN="9999"),
+        [],
+        last_auto={709987676: time.time() - 10000},
+    )
+    assert called == [1001]
 
 
 def test_chance_gate_still_works(monkeypatch):
