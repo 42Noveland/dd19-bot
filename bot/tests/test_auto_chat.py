@@ -1,10 +1,13 @@
-"""auto_chat 预筛行为：接话冷却（点名穿透）+ per-sender 跟聊窗口。
+"""auto_chat 预筛行为：接话冷却（点名穿透）+ per-sender 跟聊窗口 + 互斥补判。
 
 - 每群冷却 AUTO_REPLY_COOLDOWN>0 时：接话后的静默期内，非点名消息（含跟聊窗口）
   不再接话（防"人机对线"刷屏）；被点名可穿透。0=不冷却。
 - 跟聊窗口（per-sender，参考 qq-agent short-followup）：bot 回复过的人，
   _shared.FOLLOWUP_WINDOW 秒内其消息跳过概率门必判；别人不受影响。
   注：默认冷却 240s ≥ 窗口 120s，静默期内窗口不生效（冷却期外仍有效）。
+- 互斥（_inflight：防抖 2s + LLM 判定数秒）期间到达的消息**不丢弃**：挂起进 pending
+  （每群只留最新一条），当前判定结束后补判（TTL 30s，超时视为过时丢弃）——
+  修复"两条消息间隔短、第二条被 _inflight 吞掉"的漏接。
 """
 import asyncio
 import time
@@ -49,11 +52,12 @@ def _fake_event(text: str = "大家明天出去玩吗"):
 
 
 def _run_consider(monkeypatch, cfg, recent, *, last_auto=None, followup=None,
-                  text="大家明天出去玩吗"):
+                  text="大家明天出去玩吗", inflight=False):
     """跑一遍 _consider，返回被调度的接话判定列表。
 
     followup=(gid, uid[, window])：先清窗口，再为该 (群,人) 开窗（模拟 bot 刚回复过）。
     text：触发消息文本（点名场景用）。
+    inflight=True：预置"同群判定进行中"（模拟 _inflight 占用）。
     """
     monkeypatch.setattr(core_config, "_config", cfg, raising=False)
     monkeypatch.setattr(auto_chat.context, "recent_messages", lambda gid, limit=8: recent)
@@ -68,6 +72,9 @@ def _run_consider(monkeypatch, cfg, recent, *, last_auto=None, followup=None,
     monkeypatch.setattr(auto_chat, "_judge_and_maybe_reply", fake_judge)
     auto_chat._last_auto.clear()
     auto_chat._inflight.clear()
+    auto_chat._pending.clear()
+    if inflight:
+        auto_chat._inflight.add(709987676)
     if last_auto:
         auto_chat._last_auto.update(last_auto)
 
@@ -190,3 +197,59 @@ def test_debounce_merges_rapid_messages(monkeypatch):
     asyncio.run(go())
     assert len(calls) == 1  # 只判定一次（第一条被取代）
     assert "在吗" in calls[0] and "忙不忙" in calls[0]  # 合并文本都在材料里
+
+
+def test_inflight_message_queued_not_dropped(monkeypatch):
+    """判定进行中到达的消息不丢弃：挂起进 pending（防"漏第二条"）。"""
+    auto_chat._pending.clear()
+    called = _run_consider(monkeypatch, _cfg(), [], inflight=True)
+    assert called == []  # 互斥中：不立刻判定
+    assert 709987676 in auto_chat._pending  # 但已挂起
+    auto_chat._pending.clear()
+
+
+def test_pending_drained_after_judge(monkeypatch):
+    """当前判定结束（finally）后，挂起的消息被补判（重走完整预筛）。"""
+    monkeypatch.setattr(core_config, "_config", _cfg(), raising=False)
+    monkeypatch.setattr(auto_chat.context, "recent_messages", lambda *a, **k: [])
+    auto_chat._inflight.clear()
+    auto_chat._pending.clear()
+    called = []
+
+    async def fake_judge(bot, event):
+        called.append(event.message_id)
+
+    monkeypatch.setattr(auto_chat, "_judge_and_maybe_reply", fake_judge)
+
+    ev = _fake_event("补判的消息")
+    auto_chat._pending[709987676] = (ev, time.time())
+
+    async def go():
+        auto_chat._drain_pending(_fake_bot(), 709987676)
+        await asyncio.sleep(0.05)
+
+    asyncio.run(go())
+    assert called == [ev.message_id]  # 补判调度成功
+
+
+def test_pending_expired_dropped(monkeypatch):
+    """挂起超过 TTL（30s）的消息不再补判（话题已过，防诈尸）。"""
+    monkeypatch.setattr(core_config, "_config", _cfg(), raising=False)
+    auto_chat._inflight.clear()
+    auto_chat._pending.clear()
+    called = []
+
+    async def fake_judge(bot, event):
+        called.append(event.message_id)
+
+    monkeypatch.setattr(auto_chat, "_judge_and_maybe_reply", fake_judge)
+
+    ev = _fake_event("很旧的消息")
+    auto_chat._pending[709987676] = (ev, time.time() - 100)
+
+    async def go():
+        auto_chat._drain_pending(_fake_bot(), 709987676)
+        await asyncio.sleep(0.05)
+
+    asyncio.run(go())
+    assert called == []

@@ -6,7 +6,8 @@
   → 复用聊天核心静默回复（带引用，可配表情包）。
 
 设计要点：
-- 判断与回复全在后台任务里跑，不阻塞事件处理；同一群同一时刻只判断一条（_inflight）。
+- 判断与回复全在后台任务里跑，不阻塞事件处理；同一群同一时刻只判断一条（_inflight）；
+  互斥期间到达的消息不丢弃——挂起（pending，每群最新一条），判定结束后补判（TTL 30s）。
 - 判断材料 = 最近群聊记录 + 新消息（addressed=False 措辞）。
 - 接话冷却走 AUTO_REPLY_COOLDOWN 秒（默认 240，0=不冷却）——接话后的静默期内，非点名
   消息不再接话（跟聊窗口也拦：实测"人机对线"场景会无限连发，降频优先）；被点名可穿透。
@@ -35,6 +36,10 @@ from plugins._shared import in_followup, resolve_at_names, sender_name
 _tasks: set[asyncio.Task] = set()
 _last_auto: dict[int, float] = {}
 _inflight: set[int] = set()
+# 互斥期间到达的消息（每群只留最新一条）：判定结束后补判，防"漏第二条"。
+# TTL 内的消息才补判——超过视为过时（话题已过），丢弃防诈尸。
+_pending: dict[int, tuple[GroupMessageEvent, float]] = {}
+_PENDING_TTL = 30.0
 
 # 跟聊窗口时长在 plugins/_shared.py（FOLLOWUP_WINDOW=120s）——bot 成功回复某人后，
 # 窗口内该人的消息必判。本模块不再自己维护窗口。
@@ -96,6 +101,8 @@ async def _consider(bot: Bot, event: GroupMessageEvent) -> None:
     gid = event.group_id
     now = time.time()
     if gid in _inflight:
+        # 判定进行中：不丢弃——挂起最新一条，当前判定结束后补判（修复"漏第二条"）
+        _pending[gid] = (event, now)
         return
     named = mentions_name(probe, _bot_names(cfg, gid))
     must_judge = named or in_followup(gid, event.user_id)
@@ -105,6 +112,21 @@ async def _consider(bot: Bot, event: GroupMessageEvent) -> None:
     if not must_judge and random.random() >= cfg.auto_reply_chance:
         return
     task = asyncio.create_task(_judge_and_maybe_reply(bot, event))
+    _tasks.add(task)
+    task.add_done_callback(_tasks.discard)
+
+
+def _drain_pending(bot: Bot, gid: int) -> None:
+    """当前判定结束：补判互斥期间挂起的消息（每群一条、TTL 内、重走完整预筛）。"""
+    pending = _pending.pop(gid, None)
+    if not pending:
+        return
+    event, ts = pending
+    if time.time() - ts > _PENDING_TTL:
+        _log.debug("auto pending dropped (stale {:.0f}s) [{}]", time.time() - ts, gid)
+        return
+    _log.debug("auto pending requeue [{}] (waited {:.1f}s)", gid, time.time() - ts)
+    task = asyncio.create_task(_consider(bot, event))
     _tasks.add(task)
     task.add_done_callback(_tasks.discard)
 
@@ -165,3 +187,4 @@ async def _judge_and_maybe_reply(bot: Bot, event: GroupMessageEvent) -> None:
         _log.opt(exception=True).warning("auto reply failed [{}]: {}: {}", gid, type(exc).__name__, exc)
     finally:
         _inflight.discard(gid)
+        _drain_pending(bot, gid)
