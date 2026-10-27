@@ -172,6 +172,17 @@ def test_max_tokens_respects_call_limit(monkeypatch):
     assert captured["body"]["max_tokens"] == expected
 
 
+def test_max_tokens_clamped_to_opencode_limit(monkeypatch):
+    """LLM_MAX_TOKENS 配超服务端上限时，请求 max_tokens 必须 clamp 到 393216（防 400）。"""
+    captured = {}
+    cfg = load_config({"OPENCODE_GO_API_KEY": "ok", "LLM_MAX_TOKENS": "1000000"})
+    monkeypatch.setattr(core_config, "_config", cfg, raising=False)
+    asyncio.run(
+        llm.chat_once("hi", cfg.providers["opencode_go"], transport=_capture_transport(captured, {"content": "ok"}))
+    )
+    assert captured["body"]["max_tokens"] <= 393216
+
+
 def test_input_truncated_to_call_limit(monkeypatch):
     captured = {}
     cfg = load_config({"OPENCODE_GO_API_KEY": "ok", "LLM_MAX_TOKENS": "1000"})

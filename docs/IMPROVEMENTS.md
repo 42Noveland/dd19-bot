@@ -79,6 +79,13 @@
   - 修复：新增 pending 挂起槽（每群最新一条，`_PENDING_TTL=30s`）——互斥期间到达的消息挂起；`_judge_and_maybe_reply` 的 finally 里 `_drain_pending` 补判（重走完整预筛：冷却/点名/概率门都会重新检查）；超时视为过时丢弃（防诈尸）。
   - 回归：pytest **191 绿**（+3：挂起不丢 / 补判调度 / TTL 过期丢弃）；e2e **ALL PASS**；bot 16:04 重启生效。
   - 实时佐证：16:07:05 日志 `auto pending requeue [757633775] (waited 1.9s)` → 1.9 秒间隔的后续消息被补判（正是本 bug 场景）。
+- **2026-10-27 · 日志体检修复：LLM_MAX_TOKENS 超限导致记忆/人格演化 400**：
+  - 现象：memory extract failed 400 ×4（15:21–15:25）、persona evo 400 ×1；同进程 judge/chat 正常。
+  - 根因：.env `LLM_MAX_TOKENS=1000000`（15:20 修改）→ 输出预算算到 ~99 万，超过 opencode.ai 的 max_tokens 合法上限 **[1, 393216]**；网关按 session 亲和路由，不同节点校验不一致（judge/chat 节点放行、memory/persona 节点 400）。复现：max_tokens=999000 → `Invalid max_tokens value, valid range [1, 393216]`。
+  - 修复：`core/config.py` opencode_go provider 的 `max_output` 默认并硬 clamp 到 `_OPENCODE_MAX_OUTPUT=393216`（.env 的 LLM_OPENCODE_GO_MAX_OUTPUT 可覆盖但不超上限）+ 回归测试。
+  - 附带：`core/vision.py` max_tokens 800→2000（思考型 vision 模型约 50% 空正文：今日 17 成功 / 18 空）。
+  - 回归：pytest **192 绿**（+1 clamp 用例）；重启后 memory extract 连续成功（15:39:00 / 15:39:10 各处理 30 条、新增 1 条）。
+  - 待观察：vision 下次识别成功率。
 - （后续小项完成后在此追加）
 
 ## 备注

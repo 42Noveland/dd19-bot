@@ -63,7 +63,9 @@ def _payload(data: bytes, model: str) -> dict:
                 ],
             }
         ],
-        "max_tokens": 800,  # vision 模型先思考（reasoning）再输出，预算给小了正文会被挤空
+        # vision 模型先思考（reasoning）再输出；实测 800 时约 50% 图片正文被思考挤空
+        # （2026-10-27：17 成功 / 18 空），提到 2000 留足思考+正文预算
+        "max_tokens": 2000,
     }
 
 

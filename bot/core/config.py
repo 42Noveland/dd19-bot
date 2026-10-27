@@ -94,6 +94,12 @@ def _opt_int(env: Mapping[str, str], name: str) -> int | None:
     return int(raw) if raw.isdigit() else None
 
 
+# opencode.ai 的 max_tokens 合法上限（服务端校验：[1, 393216]，超过即 400 invalid_request_error）。
+# 2026-10-27 实测：LLM_MAX_TOKENS=1M 时输出预算算到 ~99 万，网关按 session 路由到不同节点，
+# 校验不一致——部分调用（memory/persona_evo）直接 400。这里对 opencode_go 的输出上限做硬 clamp。
+_OPENCODE_MAX_OUTPUT = 393216
+
+
 def _build_providers(env: Mapping[str, str]) -> dict[str, Provider]:
     return {
         "local": Provider(
@@ -110,7 +116,8 @@ def _build_providers(env: Mapping[str, str]) -> dict[str, Provider]:
             model=env.get("LLM_OPENCODE_GO_MODEL", "deepseek-v4.1-flash"),
             api_key=_get_key(env, "LLM_OPENCODE_GO_API_KEY", "OPENCODE_GO_API_KEY", "OPENCODE_API_KEY"),
             extra_payload=_opencode_payload(env),
-            max_output=_opt_int(env, "LLM_OPENCODE_GO_MAX_OUTPUT"),
+            max_output=min(_opt_int(env, "LLM_OPENCODE_GO_MAX_OUTPUT") or _OPENCODE_MAX_OUTPUT,
+                           _OPENCODE_MAX_OUTPUT),
             supports_tools=_is_on(env, "LLM_OPENCODE_GO_TOOLS", "1"),
         ),
     }
