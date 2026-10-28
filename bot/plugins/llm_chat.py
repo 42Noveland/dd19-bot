@@ -4,6 +4,7 @@
 即可直接对话，无需 /chat 前缀；LLM_REPLY_MODE=all 时所有非命令消息都会交给 AI；
 LLM_REPLY_MODE=command 时仅 /chat 指令触发。斜杠开头的消息一律不按聊天处理。
 """
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -224,8 +225,12 @@ usage_cmd = on_command("usage", rule=Rule(_allowed), aliases={"额度"}, priorit
 _MENTION_ALIASES: dict[str, set[str]] = {}
 
 
-async def _bot_aliases(bot: Bot) -> set[str]:
-    """机器人别名集合（QQ 号 + 登录昵称）；获取失败时退化为仅 QQ 号。"""
+async def _bot_aliases(bot: Bot, group_id: int | None = None) -> set[str]:
+    """机器人别名集合（QQ 号 + 登录昵称 + 本群人设名/常用称呼）；获取失败时退化为仅 QQ 号。
+
+    QQ 里手打的 "@小鲸鱼" 是纯文本（不是 at 段）——把人设名/配置名也纳入别名，
+    文字 @ 才能当提及处理（真 at 段不依赖这里）。
+    """
     key = str(bot.self_id)
     if key not in _MENTION_ALIASES:
         aliases = {key}
@@ -237,7 +242,19 @@ async def _bot_aliases(bot: Bot) -> set[str]:
         except Exception:  # noqa: BLE001
             pass
         _MENTION_ALIASES[key] = aliases
-    return _MENTION_ALIASES[key]
+    out = set(_MENTION_ALIASES[key])
+    if group_id is not None:
+        try:
+            out.add(personas.name_for(int(group_id)))
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            out.add(str(get_config().bot_name or "").strip())
+        except Exception:  # noqa: BLE001
+            pass
+        out.add("dd19")
+    out.discard("")
+    return out
 
 
 @event_preprocessor
@@ -252,7 +269,7 @@ async def _tolerant_text_mention(bot: Bot, event: Event) -> None:
     if not message or message[0].type != "text":
         return
     text = str(message[0].data.get("text", ""))
-    new_text, matched = strip_text_mention(text, await _bot_aliases(bot))
+    new_text, matched = strip_text_mention(text, await _bot_aliases(bot, event.group_id))
     if not matched:
         return
     message[0].data["text"] = new_text
@@ -375,16 +392,85 @@ def _is_recent_repeat(group_id: int, self_id, text: str, *, window: float = 60.0
     return False
 
 
-async def _send_reply(send, event: GroupMessageEvent, text: str, *, quote: bool = True) -> None:
+# ---------------- 出站 @ 解析：文本 "@昵称" → 真 at 段 ----------------
+# QQ 的 @ 必须是结构化 at 段才会通知/变蓝；纯文本 "@某人" 是"假 @"（对方收不到）。
+# 模型输出习惯写文字 @，这里按群成员昵称/群名片匹配后转成 at 段（匹配不到保留文字）。
+_MEMBER_CACHE: dict[int, tuple[float, dict[str, int]]] = {}
+_MEMBER_TTL = 600.0
+_AT_TEXT_RE = re.compile(r"(^|\s)@([^\s@，,。.！!？?、:：;；~～]{1,24})")
+_AT_TRAIL = "，,。.！!？?、:：;；~～"
+
+
+async def _group_member_map(bot: Bot, group_id: int) -> dict[str, int]:
+    """群成员 名字→QQ 映射（群名片+昵称；缓存 10 分钟）。拉不到返回空（不做转换）。"""
+    gid = int(group_id)
+    now = time.time()
+    hit = _MEMBER_CACHE.get(gid)
+    if hit and now - hit[0] < _MEMBER_TTL:
+        return hit[1]
+    mapping: dict[str, int] = {}
+    try:
+        members = await bot.get_group_member_list(group_id=gid)
+    except Exception:  # noqa: BLE001
+        return {}
+    for m in members or []:
+        try:
+            uid = int(m.get("user_id") or 0)
+        except (TypeError, ValueError):
+            continue
+        if not uid:
+            continue
+        for name in (str(m.get("card") or "").strip(), str(m.get("nickname") or "").strip()):
+            if name:
+                mapping[name] = uid
+    _MEMBER_CACHE[gid] = (now, mapping)
+    return mapping
+
+
+def build_at_segments(text: str, members: dict[str, int]) -> list[MessageSegment] | None:
+    """文本里的 "@昵称" → [text, at, text, ...]；没有可匹配的 @ 返回 None。
+
+    只认行首/空白后的 @（邮箱等不误伤）；名字尾部标点会被剥掉再匹配。
+    """
+    if not text or not members or "@" not in text:
+        return None
+    segs: list[MessageSegment] = []
+    last = 0
+    found = False
+    for m in _AT_TEXT_RE.finditer(text):
+        lead, raw_name = m.group(1), m.group(2)
+        core = raw_name.rstrip(_AT_TRAIL)
+        qq = members.get(core)
+        if not qq:
+            continue
+        at_pos = m.start() + len(lead)
+        if at_pos > last:
+            segs.append(MessageSegment.text(text[last:at_pos]))
+        segs.append(MessageSegment.at(qq))
+        last = at_pos + 1 + len(core)
+        # at 段后原文是普通文字时补一个空格分隔（QQ 里 at 紧跟文字会粘在一起）；
+        # 原文是空白或标点则不补（避免出现双空格 / "@昵称 ，" 这种怪相）
+        if last >= len(text) or (not text[last].isspace() and text[last] not in _AT_TRAIL):
+            segs.append(MessageSegment.text(" "))
+        found = True
+    if not found:
+        return None
+    if last < len(text):
+        segs.append(MessageSegment.text(text[last:]))
+    return segs
+
+
+async def _send_reply(send, event: GroupMessageEvent, text: str | Message, *, quote: bool = True) -> None:
     """发送聊天回复：默认带引用段（引用触发消息；QUOTE_REPLY_ENABLED=0 可关）。
 
     send_message 分条场景：首条 quote=True、后续条 quote=False（连发时只有第一条指明回哪句）。
+    text 允许传 Message（出站 @ 段已构造好）。
     """
     cfg = get_config()
     msg: str | Message = text
     mid = getattr(event, "message_id", None)
     if quote and cfg.quote_reply_enabled and mid:
-        msg = MessageSegment.reply(int(mid)) + text
+        msg = Message([MessageSegment.reply(int(mid))]) + text
     await send(msg)
 
 
@@ -406,7 +492,7 @@ async def _safe_send(send, event: GroupMessageEvent, text: str, *, quote: bool =
 
 
 def _make_send_message_handler(
-    send, event: GroupMessageEvent, persona_name: str, state: dict, *, quote_first: bool = True
+    bot: Bot, send, event: GroupMessageEvent, persona_name: str, state: dict, *, quote_first: bool = True
 ):
     """send_message 工具执行器：清洗→逐条发送（首条按引用策略）→入群上下文；返回给模型的回执。
 
@@ -447,9 +533,17 @@ def _make_send_message_handler(
             return "没有可发送的内容（内容为空）"
         truncated = len(cleaned) > _SEND_MAX_ITEMS
         sent_n, failed = 0, []
+        members: dict[str, int] | None = None
         for i, t in enumerate(cleaned[:_SEND_MAX_ITEMS]):
+            payload: str | Message = t
+            if "@" in t:
+                if members is None:
+                    members = await _group_member_map(bot, int(event.group_id))
+                at_segs = build_at_segments(t, members)
+                if at_segs:
+                    payload = Message(at_segs)
             try:
-                await _send_reply(send, event, t, quote=(quote_first and i == 0))
+                await _send_reply(send, event, payload, quote=(quote_first and i == 0))
                 try:
                     context.record_message(event.group_id, int(event.self_id), persona_name, t)
                 except Exception:  # noqa: BLE001 —— 记录失败不影响发送
@@ -712,7 +806,7 @@ async def chat_flow(
     if cfg.send_protocol_enabled:
         specs.append(_SEND_MESSAGE_SPEC)
         handlers["send_message"] = _make_send_message_handler(
-            _direct_send, event, persona_name, send_state, quote_first=quote_first
+            bot, _direct_send, event, persona_name, send_state, quote_first=quote_first
         )
         specs.append(_REACTION_SPEC)
         handlers["send_reaction"] = _make_reaction_handler(bot, event, send_state)

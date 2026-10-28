@@ -59,6 +59,15 @@ class _Harness:
         self.sent.append(str(msg))
 
 
+class _BotStub:
+    """群成员列表桩：出站 @ 解析用（默认空表 = 不做转换）。"""
+
+    self_id = "123456789"
+
+    async def get_group_member_list(self, group_id=None):
+        return []
+
+
 class _FakeBot:
     """chat_flow 工具发送（bot.send）的收集器：工具发送走直发、不进 send 回调。"""
 
@@ -77,7 +86,7 @@ def _make_handler(monkeypatch, args, *, cfg=None, fail_on=None, quote_first=True
     monkeypatch.setattr(context, "record_message", lambda *a, **k: records.append(a))
     monkeypatch.setattr(context, "recent_messages", lambda *a, **k: [])  # 复读检查查空
     state = {"text": 0, "any": 0}
-    handler = llm_chat._make_send_message_handler(h.send, _fake_event(), "十九", state, quote_first=quote_first)
+    handler = llm_chat._make_send_message_handler(_BotStub(), h.send, _fake_event(), "十九", state, quote_first=quote_first)
     result = asyncio.run(handler("send_message", args))
     return result, h.sent, state, records
 
@@ -141,7 +150,7 @@ def test_send_message_handler_reraises_finished_exception(monkeypatch):
         raise FinishedException
 
     state = {"text": 0, "any": 0}
-    handler = llm_chat._make_send_message_handler(send, _fake_event(), "十九", state)
+    handler = llm_chat._make_send_message_handler(_BotStub(), send, _fake_event(), "十九", state)
     with _pytest.raises(FinishedException):
         asyncio.run(handler("send_message", {"messages": ["一", "二"]}))
     assert state["text"] == 0  # 控制流异常不计入"已发送"
@@ -537,7 +546,7 @@ def test_send_message_cross_repeat_skipped(monkeypatch):
     monkeypatch.setattr(context, "recent_messages", lambda *a, **k: rows)
     h = _Harness()
     state = {"text": 0, "any": 0}
-    handler = llm_chat._make_send_message_handler(h.send, _fake_event(), "十九", state)
+    handler = llm_chat._make_send_message_handler(_BotStub(), h.send, _fake_event(), "十九", state)
     result = asyncio.run(handler("send_message", {"messages": ["这是一条足够长的回复文本"]}))
     assert h.sent == []  # 没重复发
     assert "没有可发送" in result
