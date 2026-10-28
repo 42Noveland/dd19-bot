@@ -431,6 +431,33 @@ def test_chat_flow_dsml_leak_blocked(tmp_path, monkeypatch):
     assert not any("DSML" in str(r.get("text") or "") for r in rows)  # 也没记进群上下文
 
 
+def test_chat_flow_dsml_leak_retries_plain(tmp_path, monkeypatch):
+    """泄漏兜底：先重试一次「无工具」模式——第二次正常则照常发出（不发错误提示）。"""
+    _prep_flow(tmp_path, monkeypatch, _cfg())
+    calls = []
+
+    async def fake_chat(prompt, **kw):
+        calls.append(kw)
+        if len(calls) == 1:
+            return llm.Reply(provider="x", text=_DSML_SAMPLE, reasoning="", truncated=False, total_tokens=0)
+        return llm.Reply(provider="x", text="僵毁最近更新了枪械改动", reasoning="", truncated=False, total_tokens=0)
+
+    monkeypatch.setattr(llm_chat.llm, "chat", fake_chat)
+    sent: list[str] = []
+
+    async def send(msg):
+        sent.append(str(msg))
+
+    asyncio.run(llm_chat.chat_flow(bot=_FakeBot(sent), event=_fake_event(), text="僵毁更新", send=send))
+    assert len(calls) == 2  # 首次 + 无工具重试
+    assert calls[1].get("extra_tools") is None and calls[1].get("tool_handler") is None
+    assert any("枪械改动" in s for s in sent)          # 重试的正文正常发出
+    assert not any("卡了一下" in s for s in sent)       # 没走失败提示
+    assert not any("DSML" in s for s in sent)
+    rows = context.recent_messages(709900003, limit=10)  # _fake_event 默认群
+    assert any("枪械改动" in str(r.get("text") or "") for r in rows)  # 记入上下文
+
+
 def test_chat_flow_dsml_leak_quiet_silent(tmp_path, monkeypatch):
     """auto 接话（quiet_skip）场景：DSML 泄漏 → 完全静默。"""
     _prep_flow(tmp_path, monkeypatch, _cfg())

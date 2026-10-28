@@ -884,12 +884,30 @@ async def chat_flow(
     out = _format_reply(reply)
     if textnorm.looks_like_tool_leak(out):
         # 兜底：模型把工具调用序列化成了文本（DSML 泄漏，实测事故）——
-        # 拦截：绝不把乱码发进群、也不记进群上下文
+        # 先重试一次"无工具"模式（退化纯文本回复，至少别让这轮变哑巴）；
+        # 仍泄漏才拦截：绝不把乱码发进群、也不记进群上下文
         preview = " ".join(out.split())[:80]
-        _log.warning("chat reply [group {}] 疑似工具调用文本泄漏，已拦截: {}", event.group_id, preview)
-        if not quiet_skip:
-            await _safe_send(send, event, cfg.llm_error_reply)
-        return
+        _log.warning("chat reply [group {}] 疑似工具调用文本泄漏，重试无工具模式: {}", event.group_id, preview)
+        try:
+            retry = await llm.chat(
+                prompt,
+                session_key=f"qqbot-group-{event.group_id}-plain",
+                extra_tools=None,
+                tool_handler=None,
+                dynamic_blocks=dynamic_blocks,
+                extra_system=_CHAT_RULES,
+                system_prompt_override=persona_text,
+                is_replied=None,
+            )
+            out = _format_reply(retry)
+        except Exception as exc:  # noqa: BLE001
+            _log.opt(exception=True).warning("chat plain retry failed [group {}]: {}", event.group_id, exc)
+            out = ""
+        if not out or textnorm.looks_like_tool_leak(out):
+            _log.warning("chat reply [group {}] 重试仍泄漏，已拦截", event.group_id)
+            if not quiet_skip:
+                await _safe_send(send, event, cfg.llm_error_reply)
+            return
     if _is_recent_repeat(event.group_id, int(event.self_id), out):
         # #4 复读防护：与近 60s 已发内容完全相同 → 静默（不重复刷群）
         _log.info("chat reply [group {}] 与近 60s 已发内容重复，静默: {}", event.group_id, " ".join(out.split())[:60])
